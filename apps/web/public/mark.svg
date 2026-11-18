@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Pansus — Pantau Survei dan Sensus</title>
+  <desc>Huruf P membentuk lensa. Empat titik mewakili populasi yang dicakup sensus, dengan satu titik jingga sebagai sampel survei.</desc>
+  <path fill="#003c80" d="M9 59V23C9 12.5 16.5 5 27 5h10a20 20 0 0 1 0 40H25l4-10h8a10 10 0 0 0 0-20H28c-5.4 0-9 3.6-9 9v25Z"/>
+  <g fill="#003c80">
+    <circle cx="28" cy="21" r="3"/>
+    <circle cx="28" cy="29" r="3"/>
+    <circle cx="37" cy="29" r="3"/>
+  </g>
+  <circle cx="37" cy="21" r="3" fill="#eb891b"/>
+</svg>

@@ -1,0 +1,58 @@
+{
+  "name": "monitoring-bps-sumbar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --watch --import tsx apps/api/src/main.ts --dev",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "build": "npm run typecheck && vite build --config apps/web/vite.config.ts",
+    "start": "node --import tsx apps/api/src/main.ts",
+    "worker": "node --import tsx apps/worker/src/main.ts",
+    "account": "node --import tsx apps/api/src/account.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "schema": "node --import tsx packages/contracts/export.ts",
+    "fixtures": "node --import tsx fixtures/synthetic/generate.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1171.0",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@nestjs/common": "^12.5.1",
+    "@nestjs/core": "^12.5.1",
+    "@nestjs/platform-express": "^12.5.1",
+    "@node-rs/argon2": "^2.2.2",
+    "@tanstack/react-table": "^8.21.3",
+    "bullmq": "^6.7.7",
+    "csv-parse": "^7.0.3",
+    "fflate": "^0.8.3",
+    "lucide-react": "^1.74.0",
+    "mongodb": "^7.9.0",
+    "playwright": "^1.65.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.5",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "tsx": "^4.23.15",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
