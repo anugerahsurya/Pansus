@@ -77,7 +77,7 @@ Uji browser mengharapkan Google Chrome terpasang di Windows. Di Linux, siapkan b
 
 ## Deploy ke Vercel
 
-Hubungkan repositori dari root proyek. `vercel.json` menjalankan `npm run build`, menyajikan `dist/web`, dan mengarahkan URL Studio serta dashboard ke router React. Fungsi `api/[...path].ts` melayani rute API dari origin yang sama.
+Hubungkan repositori dari root proyek. `vercel.json` menjalankan `npm run build:vercel`, menyajikan `dist/web`, dan mengarahkan URL Studio serta dashboard ke router React. Rute `/api/*` dilayani fungsi Node.js dari origin yang sama.
 
 Atur `MONGODB_URI` (atau `MONGO_URI`) ke MongoDB replica set, dengan akses tulis ke `bps_monitoring` atau database yang ditentukan oleh `MONGO_DB`. Vercel menyimpan berkas di GridFS pada database yang sama jika `S3_BUCKET` belum diatur. Pemeriksaan impor dan pekerjaan ekspor berjalan saat Studio atau portal mengecek statusnya.
 

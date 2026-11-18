@@ -1,10 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Express } from 'express'
-import { createApp } from '../apps/api/src/bootstrap'
+import { createApp } from './bootstrap'
 
 let server: Promise<Express> | undefined
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  const url = new URL(req.url || '/', 'http://localhost')
+  const route = url.searchParams.get('__pansus_path')
+  if (url.pathname === '/api/router' && route) url.pathname = '/api/' + route
+  url.searchParams.delete('__pansus_path')
+  req.url = url.pathname + url.search
   try {
     server ??= createApp({ serverless: true }).then(async ({ app }) => {
       await app.init()

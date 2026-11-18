@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": ["node", "vite/client"]
   },
-  "include": ["api/**/*.ts", "apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.tsx", "templates/**/*.ts", "fixtures/**/*.ts", "tests/**/*.ts", "playwright.config.ts"]
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.tsx", "templates/**/*.ts", "fixtures/**/*.ts", "tests/**/*.ts", "playwright.config.ts"]
 }
