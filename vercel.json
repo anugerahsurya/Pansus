@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist/web",
+  "functions": {
+    "api/[...path].ts": {
+      "maxDuration": 120,
+      "includeFiles": "node_modules/@sparticuz/chromium/bin/**"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/((?!api(?:/|$)|assets(?:/|$)|[^/]+\\.[^/]+$).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    { "source": "/(.*)", "headers": [
+      { "key": "Referrer-Policy", "value": "no-referrer" },
+      { "key": "X-Content-Type-Options", "value": "nosniff" },
+      { "key": "X-Frame-Options", "value": "DENY" }
+    ] },
+    { "source": "/(d/.*|render/.*|bagikan)", "headers": [
+      { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+    ] }
+  ]
+}

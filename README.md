@@ -75,6 +75,16 @@ npm run test:e2e
 
 Uji browser mengharapkan Google Chrome terpasang di Windows. Di Linux, siapkan browser dengan `npx playwright install chromium`. Pemeriksaan mencakup rumus dan satuan, kontrol PES, kesetaraan empat format impor, riwayat, penutupan, pencabutan tautan, undangan, layar ponsel, dan ekspor penuh. Pengujian browser memakai database serta objek lokal terpisah dari pengembangan.
 
+## Deploy ke Vercel
+
+Hubungkan repositori dari root proyek. `vercel.json` menjalankan `npm run build`, menyajikan `dist/web`, dan mengarahkan URL Studio serta dashboard ke router React. Fungsi `api/[...path].ts` melayani rute API dari origin yang sama.
+
+Atur `MONGODB_URI` (atau `MONGO_URI`) ke MongoDB replica set, dengan akses tulis ke `bps_monitoring` atau database yang ditentukan oleh `MONGO_DB`. Vercel menyimpan berkas di GridFS pada database yang sama jika `S3_BUCKET` belum diatur. Pemeriksaan impor dan pekerjaan ekspor berjalan saat Studio atau portal mengecek statusnya.
+
+Atur `ADMIN_EMAIL` dan `ADMIN_PASSWORD` sebagai variabel server sebelum membuat akun admin pertama. `GEMINI_API_KEY` mengaktifkan saran konfigurasi CSV. Dashboard sintetis tersedia secara bawaan dan dapat dinonaktifkan dengan `SEED_DEMOS=false`. Jika menggunakan domain yang berbeda untuk renderer, atur `RENDER_ORIGIN` ke origin HTTPS yang dapat diakses Chromium.
+
+Vercel membatasi payload Functions hingga 4,5 MB per permintaan atau respons. Untuk alur dengan berkas lebih besar, jalankan API dan worker di host Node.js sebagaimana di bawah. [Batas Vercel Functions](https://vercel.com/docs/functions/limitations)
+
 ## Konfigurasi staging
 
 **API** dijalankan dari direktori proyek dengan `npm run build` lalu `npm start`. Reverse proxy menyajikan satu origin HTTPS dan mengatur `PUBLIC_ORIGIN` sesuai alamat pembaca. Aktifkan cookie Secure pada HTTPS.

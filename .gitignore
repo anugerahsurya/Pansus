@@ -10,3 +10,5 @@ Referensi/
 fixtures/synthetic/generated/
 output/playwright/
 .playwright-cli/
+
+.vercel

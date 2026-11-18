@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { MongoClient, type ClientSession, type Collection } from 'mongodb'
+import { MongoClient, type ClientSession, type Collection, type Db } from 'mongodb'
+import { mongoObjects, type Objects } from './objects'
 
 type Entry = { _id: string; value: unknown; revision?: number }
 export class Records {
@@ -21,6 +22,7 @@ export class Records {
   }
 }
 export interface Store {
+  objects?: Objects
   read<T>(action: (records: Records) => T): Promise<T>
   write<T>(action: (records: Records) => T): Promise<T>
 }
@@ -59,8 +61,10 @@ class LocalStore implements Store {
 
 class MongoStore implements Store {
   private readonly collection: Collection<Entry>
-  constructor(private readonly client: MongoClient) {
-    this.collection = client.db(process.env.MONGO_DB || 'bps_monitoring').collection<Entry>('monitoring_records')
+  readonly objects?: Objects
+  constructor(private readonly client: MongoClient, database: Db, serverless: boolean) {
+    this.collection = database.collection<Entry>('monitoring_records')
+    if (serverless && !process.env.S3_BUCKET) this.objects = mongoObjects(database)
   }
   private async records(session?: ClientSession) {
     const entries = await this.collection.find({ _id: { $ne: '_serialization' } }, { session }).toArray()
@@ -81,13 +85,21 @@ class MongoStore implements Store {
   }
 }
 
-export async function openStore(): Promise<Store> {
-  if (process.env.MONGO_URI) {
-    const client = await new MongoClient(process.env.MONGO_URI, { serverSelectionTimeoutMS: 5000, ignoreUndefined: true }).connect()
-    await client.db(process.env.MONGO_DB || 'bps_monitoring').collection<Entry>('monitoring_records')
-      .updateOne({ _id: '_serialization' }, { $setOnInsert: { value: 0 } }, { upsert: true })
-    return new MongoStore(client)
+export async function openStore({ serverless = false } = {}): Promise<Store> {
+  const uri = process.env.MONGO_URI || process.env.MONGODB_URI
+  if (uri) {
+    const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000, ignoreUndefined: true })
+    try {
+      await client.connect()
+      const database = client.db(process.env.MONGO_DB || 'bps_monitoring')
+      await database.collection<Entry>('monitoring_records')
+        .updateOne({ _id: '_serialization' }, { $setOnInsert: { value: 0 } }, { upsert: true })
+      return new MongoStore(client, database, serverless)
+    } catch (error) {
+      await client.close()
+      throw error
+    }
   }
-  if (process.env.NODE_ENV === 'production') throw new Error('MONGO_URI replica set wajib untuk mode produksi.')
+  if (serverless || process.env.NODE_ENV === 'production') throw new Error('MONGO_URI atau MONGODB_URI replica set wajib untuk mode produksi.')
   return new LocalStore(resolve(process.env.MONITORING_DB || '.local/monitoring.sqlite'))
 }

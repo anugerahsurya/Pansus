@@ -9,7 +9,7 @@ import { templateDefinition, templates } from '../../../templates/index'
 import { exampleDates, exampleFiles } from '../../../fixtures/synthetic/index'
 import { account, audit, datasetSignature, fail, hash, now, token, type AccessSession, type Dashboard, type Grant, type ImportJob, type Proof, type Release, type Session, type Snapshot, type User } from './model'
 import type { Records, Store } from './store'
-import { openObjects } from './objects'
+import { openObjects, type Objects } from './objects'
 import { JobQueue } from './queues'
 import { geminiAvailable, suggestCsv } from './gemini'
 
@@ -59,17 +59,21 @@ const publicDefinition = (definition: Definition): Definition => ({ ...definitio
 
 export class Monitoring {
   private readonly attempts = new Map<string, { count: number; until: number }>()
-  readonly objects = openObjects()
+  readonly objects: Objects
+  readonly onDemandJobs: boolean
   private readonly imports = new JobQueue('bps-monitoring-imports')
   private importRunning = false
   private dummyHash = ''
-  constructor(readonly store: Store) {}
+  constructor(readonly store: Store, { onDemandJobs = false } = {}) {
+    this.objects = store.objects ?? openObjects()
+    this.onDemandJobs = onDemandJobs
+  }
 
   async initialize() {
     this.dummyHash = await passwordHash(token(), { algorithm: Algorithm.Argon2id })
-    const production = process.env.NODE_ENV === 'production'
+    const production = this.onDemandJobs || process.env.NODE_ENV === 'production'
     const hasUser = await this.store.read(db => db.list<User>('user:').length > 0)
-    if (!hasUser) {
+    if (!hasUser && (!this.onDemandJobs || process.env.ADMIN_PASSWORD)) {
       const password = process.env.ADMIN_PASSWORD || (!production ? 'Monitoring!2026' : '')
       if (password.length < 12) throw new Error('Set ADMIN_PASSWORD (minimum 12 characters) before the first start.')
       const users: User[] = [{ id: 'admin', tenant: 'sumbar', role: 'admin', name: 'Admin Sumatera Barat', email: process.env.ADMIN_EMAIL || 'admin@example.test', hash: await passwordHash(password, { algorithm: Algorithm.Argon2id }) }]
@@ -80,7 +84,7 @@ export class Monitoring {
         if (!db.list<User>('user:').length) for (const user of users) db.put(`user:${user.id}`, user)
       })
     }
-    if (!production || process.env.SEED_DEMOS === 'true') {
+    if (!production || (this.onDemandJobs && process.env.SEED_DEMOS !== 'false') || process.env.SEED_DEMOS === 'true') {
       await this.store.write(db => {
         for (const name of ['pes', 'susenas'] as const) {
           const existing = db.get<Dashboard>(`dashboard:demo-${name}`)
@@ -407,6 +411,10 @@ export class Monitoring {
     return { job, user, dashboard }
   }
   async preview(credentials: Credentials, id: string) {
+    if (this.onDemandJobs) {
+      const { job } = await this.store.read(db => this.getJob(db, credentials, id))
+      if (job.status === 'uploaded' || (job.status === 'validating' && (job.lease ?? 0) <= Date.now())) await this.processImports(id)
+    }
     return this.store.read(db => { const { dashboard, job } = this.getJob(db, credentials, id); return this.importPreview(db, dashboard, job) })
   }
   async confirm(credentials: Credentials, id: string, password: string, ip: string) {

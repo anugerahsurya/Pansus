@@ -48,7 +48,11 @@ export class Exports {
     })
   }
   async status(credentials: Credentials, id: string) {
-    const { job } = await this.authorised(credentials, id)
+    let { job } = await this.authorised(credentials, id)
+    if (this.app.onDemandJobs && (job.status === 'queued' || (job.status === 'processing' && (job.lease ?? 0) <= Date.now()))) {
+      await this.run(id)
+      ;({ job } = await this.authorised(credentials, id))
+    }
     return { id, status: job.status, error: job.error, pages: job.pages }
   }
   async download(credentials: Credentials, id: string) {
@@ -113,10 +117,15 @@ export class Exports {
   }
   private async render(key: string, report: Report) {
     const channel = process.env.CHROMIUM_CHANNEL || (process.platform === 'win32' ? 'chrome' : undefined)
-    const browser = await chromium.launch({ channel, executablePath: process.env.CHROMIUM_PATH, timeout: 25_000 })
+    const serverlessChrome = this.app.onDemandJobs && !process.env.CHROMIUM_PATH ? (await import('@sparticuz/chromium')).default : undefined
+    const browser = await chromium.launch(serverlessChrome
+      ? { args: serverlessChrome.args, executablePath: await serverlessChrome.executablePath(), timeout: 25_000 }
+      : { channel, executablePath: process.env.CHROMIUM_PATH, timeout: 25_000 })
     try {
       const page = await browser.newPage({ viewport: { width: 1360, height: 880 }, deviceScaleFactor: 1.25, reducedMotion: 'reduce' })
-      const origin = process.env.RENDER_ORIGIN || `http://127.0.0.1:${process.argv.includes('--dev') ? 5173 : process.env.API_PORT || 3001}`
+      const deploymentDomain = (process.env.VERCEL_ENV === 'production' && process.env.VERCEL_PROJECT_PRODUCTION_URL) || process.env.VERCEL_URL
+      const origin = process.env.RENDER_ORIGIN || (this.app.onDemandJobs && deploymentDomain
+        ? `https://${deploymentDomain}` : `http://127.0.0.1:${process.argv.includes('--dev') ? 5173 : process.env.API_PORT || 3001}`)
       await page.goto(`${origin}/render/${key}`, { waitUntil: 'domcontentloaded', timeout: 25_000 })
       const content = page.locator('[data-report-ready]')
       await content.waitFor({ timeout: 15_000 })

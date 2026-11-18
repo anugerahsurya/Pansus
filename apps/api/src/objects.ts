@@ -1,6 +1,9 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { GridFSBucket, type Db } from 'mongodb'
 
 export interface Objects {
   put(key: string, data: Uint8Array): Promise<void>
@@ -12,6 +15,25 @@ const allowedKey = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*(?:\.[a-z0-9]+)?$/
 function check(key: string) {
   if (!allowedKey.test(key)) throw new Error('Invalid object key')
   return key
+}
+
+export function mongoObjects(database: Db): Objects {
+  const bucket = new GridFSBucket(database, { bucketName: 'monitoring_objects' })
+  return {
+    async put(key, data) {
+      const upload = bucket.openUploadStream(check(key))
+      try { await pipeline(Readable.from([data]), upload) }
+      catch (error) { await upload.abort().catch(() => {}); throw error }
+    },
+    async get(key) {
+      const chunks: Buffer[] = []
+      for await (const chunk of bucket.openDownloadStreamByName(check(key))) chunks.push(chunk)
+      return Buffer.concat(chunks)
+    },
+    async remove(key) {
+      for await (const file of bucket.find({ filename: check(key) })) await bucket.delete(file._id)
+    },
+  }
 }
 export function openObjects(): Objects {
   const bucket = process.env.S3_BUCKET
