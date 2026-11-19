@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Plus, Redo2, Save, Trash2, Undo2 } from 'lucide-react'
-import type { Definition, Field, Rule, Widget } from '../../../packages/contracts/index'
+import { widgetWidths, type Definition, type Field, type Rule, type Widget } from '../../../packages/contracts/index'
 import { widgetLabels } from '../../../packages/widgets/index'
 import { api, fmt, type DashboardDetail } from './api'
 import { Alert } from './common'
@@ -8,6 +8,7 @@ import { DraftPreview } from './preview'
 
 const aggLabels: Record<Rule['op'], string> = { sum: 'Jumlah', count: 'Jumlah baris terisi', mean: 'Rata-rata', mode: 'Modus', weightedMean: 'Rata-rata tertimbang', ratioOfSums: 'Rasio jumlah', none: 'Kosongkan', reportedValue: 'Rekap resmi dari sumber', difference: 'Selisih', formula: 'Rumus dari angka provinsi' }
 const units: Record<Field['unit'], string> = { count: 'Hitungan bulat', number: 'Angka', percent: 'Persentase', category: 'Kategori' }
+const widthLabels: Record<Widget['width'], string> = { quarter: 'Seperempat', third: 'Sepertiga', half: 'Setengah', 'two-thirds': 'Dua pertiga', full: 'Penuh' }
 function identity(prefix: string) { return `${prefix}_${crypto.randomUUID().slice(0, 8)}` }
 
 export function Editor({ detail, onUpdate, active }: { detail: DashboardDetail; onUpdate: () => void; active: boolean }) {
@@ -67,7 +68,8 @@ export function Editor({ detail, onUpdate, active }: { detail: DashboardDetail; 
   function addWidget(type: Widget['type']) {
     const dataset = draft.datasets[0]
     const fields = dataset.fields.filter(field => field.public && field.unit !== 'category')
-    const base = { id: identity('widget'), title: widgetLabels[type], type, version: 1 as const, width: type === 'table' ? 'full' as const : 'half' as const }
+    const width: Widget['width'] = type === 'table' ? 'full' : type === 'progress' || type === 'kpi' ? 'third' : 'half'
+    const base = { id: identity('widget'), title: widgetLabels[type], type, version: 1 as const, width }
     if (type === 'link' || type === 'schedule') { change({ ...draft, widgets: [...draft.widgets, base] }); return }
     change({ ...draft, widgets: [...draft.widgets, { ...base, dataset: dataset.id, field: fields[0]?.id, fields: type === 'table' || type === 'donut' ? fields.slice(0, 3).map(field => field.id) : undefined, provinceFooter: type === 'table' ? { enabled: true, rules: {} } : undefined }] })
   }
@@ -142,7 +144,7 @@ function WidgetEditor({ widget, definition, onChange }: { widget: Widget; defini
   const choice = available.map(field => <option value={field.id} key={field.id}>{field.label}</option>)
   const multiple = widget.type === 'table' || widget.type === 'donut'
   return <div className="form-stack">
-    <div className="form-columns"><label>Judul komponen<input value={widget.title} onChange={event => onChange({ ...widget, title: event.target.value })} /></label><label>Lebar<select value={widget.width} onChange={event => onChange({ ...widget, width: event.target.value as Widget['width'] })}><option value="half">Setengah</option><option value="full">Penuh</option></select></label></div>
+    <div className="form-columns"><label>Judul komponen<input value={widget.title} onChange={event => onChange({ ...widget, title: event.target.value })} /></label><label>Lebar di layar lebar<select value={widget.width} onChange={event => onChange({ ...widget, width: event.target.value as Widget['width'] })}>{widgetWidths.map(width => <option key={width} value={width}>{width === 'half' && (widget.type === 'progress' || widget.type === 'kpi') ? 'Sepertiga (format lama)' : widthLabels[width]}</option>)}</select></label></div>
     {dataWidget && <label>Dataset<select value={widget.dataset ?? ''} onChange={event => onChange({ ...widget, dataset: event.target.value, field: undefined, fields: [], target: undefined, provinceFooter: widget.provinceFooter && { enabled: widget.provinceFooter.enabled, rules: {} } })}><option value="">Pilih dataset</option>{definition.datasets.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.label}</option>)}</select></label>}
     {dataWidget && !multiple && <div className="form-columns"><label>Angka yang dihitung<select value={widget.field ?? ''} onChange={event => onChange({ ...widget, field: event.target.value || undefined })}><option value="">Pilih kolom</option>{choice}</select></label><label>Dibagi dengan<select value={widget.target ?? ''} onChange={event => onChange({ ...widget, target: event.target.value || undefined })}><option value="">Nilai langsung</option>{choice}</select></label></div>}
     {widget.type === 'bars' && widget.field && <div className="check-grid" aria-label="Seri tambahan">{available.filter(field => field.id !== widget.field && field.unit === available.find(item => item.id === widget.field)?.unit).map(field => <label className="check" key={field.id}><input type="checkbox" checked={widget.fields?.includes(field.id) ?? false} disabled={(widget.fields?.length ?? 0) >= 3 && !widget.fields?.includes(field.id)} onChange={event => onChange({ ...widget, fields: event.target.checked ? [...(widget.fields ?? []), field.id] : widget.fields?.filter(id => id !== field.id) })} /> {field.label}</label>)}</div>}

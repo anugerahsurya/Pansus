@@ -21,7 +21,7 @@ const pesDatasets: Dataset[] = [
 const sumRules = (fields: string[]): Record<string, Rule> => Object.fromEntries(fields.map(id => [id, { op: 'sum' }]))
 const version = { version: 1 } as const
 const progress = (id: string, title: string, dataset: string, field: string, target?: string): Widget =>
-  ({ ...version, id, title, type: 'progress', width: 'half', dataset, field, target })
+  ({ ...version, id, title, type: 'progress', width: 'third', dataset, field, target })
 const table = (id: string, title: string, dataset: string, fields: string[], rules = sumRules(fields)): Widget =>
   ({ ...version, id, title, type: 'table', width: 'full', dataset, fields, provinceFooter: { enabled: true, rules } })
 const bars = (id: string, title: string, dataset: string, field: string, target?: string): Widget =>
@@ -35,8 +35,8 @@ const pes: Definition = {
     progress('sls_done', 'SLS selesai', 'sls', 'selesai', 'target'),
     progress('nonub_done', 'Non-UB selesai final', 'nonub', 'final', 'target'),
     progress('ub_done', 'UB selesai final', 'ub', 'final', 'target'),
-    bars('sls_region', 'Penyelesaian SLS per wilayah', 'sls', 'selesai', 'target'),
-    { ...version, id: 'sls_status', title: 'Distribusi status SLS', type: 'donut', width: 'half', dataset: 'sls', fields: ['belum', 'sedang', 'selesai'] },
+    { ...bars('sls_region', 'Penyelesaian SLS per wilayah', 'sls', 'selesai', 'target'), width: 'two-thirds' },
+    { ...version, id: 'sls_status', title: 'Distribusi status SLS', type: 'donut', width: 'third', dataset: 'sls', fields: ['belum', 'sedang', 'selesai'] },
     table('sls_table', 'Rincian SLS', 'sls', ['target', 'belum', 'sedang', 'selesai']),
     table('nonub_table', 'Rincian penugasan Non-UB', 'nonub', ['target', 'ppl', 'pml', 'final', 'gap']),
     table('ub_table', 'Rincian penugasan UB', 'ub', ['target', 'ppl', 'pml', 'final', 'gap']),

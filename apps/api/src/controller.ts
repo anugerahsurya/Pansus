@@ -3,7 +3,7 @@ import { AnyFilesInterceptor } from '@nestjs/platform-express'
 import type { Request, Response } from 'express'
 import type {} from 'multer'
 import { z } from 'zod'
-import { idSchema, visibilitySchema } from '../../../packages/contracts/index'
+import { idSchema, visibilitySchema, widgetWidths } from '../../../packages/contracts/index'
 import { aggregate, sortRows } from '../../../packages/metrics/index'
 import { exampleFiles } from '../../../fixtures/synthetic/index'
 import type { InputFile } from '../../../packages/adapters/index'
@@ -47,7 +47,7 @@ export class ControllerRoutes {
   @Get('admin/widget-catalog') widgets(@Req() req: Request) {
     return this.app.store.read(db => {
       this.app.requireUser(db, credentials(req))
-      return ['progress', 'kpi', 'bars', 'donut', 'table', 'schedule', 'link'].map(type => ({ type, version: 1, widths: ['half', 'full'] }))
+      return ['progress', 'kpi', 'bars', 'donut', 'table', 'schedule', 'link'].map(type => ({ type, version: 1, widths: widgetWidths }))
     })
   }
   @Get('d/:slug') report(@Req() req: Request, @Param('slug') slug: string, @Query('release') release?: string) {

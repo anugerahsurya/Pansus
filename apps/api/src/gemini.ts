@@ -96,7 +96,7 @@ function designDraft(result: z.infer<typeof designSchema>, columns: Column[], de
     const actual = fieldsByColumn.get(pair.actual)
     const target = fieldsByColumn.get(pair.target)
     if (actual?.unit !== 'count' || target?.unit !== 'count' || !/\b(target|sasaran)\b/.test(target.label) || actual.id === target.id) continue
-    widgets.push({ id: `progres_${index + 1}`, type: 'progress', title: actual.label, dataset: dataset.id, field: actual.id, target: target.id, width: 'half', version: 1 })
+    widgets.push({ id: `progres_${index + 1}`, type: 'progress', title: actual.label, dataset: dataset.id, field: actual.id, target: target.id, width: 'third', version: 1 })
   }
   for (let index = 0; index < publicFields.length; index += 16) {
     widgets.push({ id: `tabel_${index / 16 + 1}`, type: 'table', title: index ? `Rincian wilayah (${index / 16 + 1})` : 'Rincian wilayah',

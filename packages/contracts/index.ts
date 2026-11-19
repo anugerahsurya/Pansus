@@ -20,9 +20,10 @@ const datasetSchema = z.object({
   fields: z.array(fieldSchema).min(1).max(50), publicDetail: z.boolean().optional(),
 })
 const widgetType = z.enum(['progress', 'kpi', 'bars', 'donut', 'table', 'link', 'schedule'])
+export const widgetWidths = ['quarter', 'third', 'half', 'two-thirds', 'full'] as const
 const widgetSchema = z.object({
   id: idSchema, title: z.string().trim().min(1).max(120), version: z.literal(1).default(1),
-  width: z.enum(['half', 'full']).default('half'), type: widgetType,
+  width: z.enum(widgetWidths).default('half'), type: widgetType,
   dataset: idSchema.optional(), field: idSchema.optional(), fields: z.array(idSchema).max(16).optional(),
   target: idSchema.optional(), description: z.string().max(300).optional(),
   url: z.url({ protocol: /^https?$/ }).max(500).optional(),

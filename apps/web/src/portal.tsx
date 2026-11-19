@@ -11,7 +11,7 @@ export function Reader({ demo = false }: { demo?: boolean }) {
   const slug = demo ? 'progres-lapangan-pes' : params.slug!
   const [query, setQuery] = useSearchParams()
   const release = query.get('release')
-  const request = useData<Report>(`/d/${slug}${release ? `?release=${encodeURIComponent(release)}` : ''}`)
+  const request = useData<Report>(`/d/${slug}${release ? `?release=${encodeURIComponent(release)}` : ''}`, slug)
   const [sorts, setSorts] = useState<Sorts>({})
   const [job, setJob] = useState<{ id: string; status: string; error?: string; pages?: number }>()
   const [exportError, setExportError] = useState('')
@@ -25,7 +25,7 @@ export function Reader({ demo = false }: { demo?: boolean }) {
     return () => window.clearTimeout(timeout)
   }, [job])
   async function startExport() {
-    if (!report) return
+    if (!report || request.loading) return
     setBusy(true)
     setExportError('')
     try { setJob(await api(`/dashboards/${report.id}/exports`, 'POST', { releaseId: report.currentRelease, sort: sorts, includeDetail })) }
@@ -34,17 +34,18 @@ export function Reader({ demo = false }: { demo?: boolean }) {
   }
   return <>
     <Breadcrumb parts={[{ label: 'Portal pembaca', to: '/katalog' }, demo ? 'Ringkasan contoh' : report?.definition.title ?? 'Dashboard kegiatan']} />
-    {request.loading && <Loading />}
+    {request.loading && !report && <Loading />}
     {request.error && <div className="panel state-panel"><Alert>{request.error}</Alert><div className="actions"><button className="button" onClick={request.reload}>Coba lagi</button><Link className="button" to={`/masuk?lanjut=${encodeURIComponent(`/d/${slug}`)}`}>Masuk dengan akun undangan</Link><Link to="/katalog" className="button subtle">Buka katalog kegiatan</Link></div></div>}
     {report && <>
       <div className="report-toolbar">
         <div className="report-context"><span className="tag"><i />{report.demo ? 'Dashboard contoh' : report.activityStatus === 'closed' ? 'Kegiatan selesai' : 'Kegiatan berjalan'}</span></div>
         <div className="report-actions">
-          <label className="select-button"><CalendarDays size={16} /><span className="sr-only">Kondisi data</span><select aria-label="Kondisi data" value={report.currentRelease} onChange={event => setQuery({ release: event.target.value })}>{report.history.map(item => <option key={item.id} value={item.id}>{conditionDate(item.date)} · {item.time} WIB{report.history.some(other => other.id !== item.id && other.date === item.date && other.time === item.time) ? ` · v${item.version}` : ''}</option>)}</select><ChevronDown size={14} /></label>
-          {job?.status === 'ready' ? <a className="button primary" href={`/api/exports/${job.id}/download`}><ArrowDownToLine size={17} /> Unduh {job.pages && job.pages > 1 ? 'ZIP laporan' : 'PNG'}</a>
-            : <button className="button primary" onClick={startExport} disabled={busy || !exportError && (job?.status === 'queued' || job?.status === 'processing')}><ArrowDownToLine size={17} /> {busy || !exportError && (job?.status === 'queued' || job?.status === 'processing') ? 'Menyiapkan PNG…' : 'Unduh PNG'}</button>}
+          <label className="select-button"><CalendarDays size={16} /><span className="sr-only">Kondisi data</span><select aria-label="Kondisi data" value={release ?? report.currentRelease} onChange={event => setQuery({ release: event.target.value })}>{report.history.map(item => <option key={item.id} value={item.id}>{conditionDate(item.date)} · {item.time} WIB{report.history.some(other => other.id !== item.id && other.date === item.date && other.time === item.time) ? ` · v${item.version}` : ''}</option>)}</select><ChevronDown size={14} /></label>
+          {job?.status === 'ready' && !request.loading ? <a className="button primary" href={`/api/exports/${job.id}/download`}><ArrowDownToLine size={17} /> Unduh {job.pages && job.pages > 1 ? 'ZIP laporan' : 'PNG'}</a>
+            : <button className="button primary" onClick={startExport} disabled={request.loading || busy || !exportError && (job?.status === 'queued' || job?.status === 'processing')}><ArrowDownToLine size={17} /> {busy || !exportError && (job?.status === 'queued' || job?.status === 'processing') ? 'Menyiapkan PNG…' : 'Unduh PNG'}</button>}
         </div>
       </div>
+      <span role="status" className="sr-only">{request.loading ? 'Memuat kondisi data…' : ''}</span>
       {Object.values(report.data).some(dataset => dataset.detail?.length) && <label className="check export-choice"><input type="checkbox" checked={includeDetail} onChange={event => { setIncludeDetail(event.target.checked); setJob(undefined) }} /> Sertakan rincian sampai SLS dalam unduhan <small>({Object.values(report.data).reduce((total, dataset) => total + (dataset.detail?.length ?? 0), 0)} baris tambahan)</small></label>}
       {(job?.error || exportError) && <Alert>{exportError || job?.error}</Alert>}
       <Hero report={report} />
