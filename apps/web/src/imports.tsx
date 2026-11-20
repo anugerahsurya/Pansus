@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { FileSpreadsheet, Info, Plus, Settings2 } from 'lucide-react'
+import { ArrowDown, FileSpreadsheet, Info, Plus, Settings2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import type { Dataset, UploadMapping } from '../../../packages/contracts/index'
+import type { Dataset, Definition, UploadMapping } from '../../../packages/contracts/index'
 import { analysisFormat, type CsvAnalysisStage, type GeminiStatus } from '../../../packages/contracts/csv-analysis'
 import { ApiError, api, conditionDate, currentWib, fmt, requestCsvAnalysis, type CsvSuggestion, type DashboardDetail, type ImportJob } from './api'
 import { Alert } from './common'
+import { SourceWorkbench } from './source-workbench'
 
 const tabularFormats = '.csv,.tsv,.xlsx,.xls,.json'
 const csvUnits = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Kategori' }
@@ -69,8 +70,9 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const [idempotency] = useState(() => crypto.randomUUID())
   const closed = detail.activityStatus === 'closed'
   const custom = detail.template === 'custom'
+  const physical = detail.draft.datasets.filter(dataset => !dataset.join)
   const slots = workbook ? [{ id: 'workbook', label: 'Workbook Susenas–Seruti', fields: [] }] : [
-    ...detail.draft.datasets, ...(detail.template === 'pes' ? [{ id: 'sls_detail', label: 'Rincian SSLS (opsional)', fields: [] }] : []),
+    ...physical, ...(detail.template === 'pes' ? [{ id: 'sls_detail', label: 'Rincian SSLS (opsional)', fields: [] }] : []),
   ]
   const jobId = query.get('tab') === 'data' ? query.get('job') : null
   const job = selectedJob?.id === jobId ? selectedJob : undefined
@@ -91,6 +93,15 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const updatedFiles = slots.some(slot => files[slot.id])
   const missingFiles = slots.some(slot => slot.id !== 'sls_detail' && !files[slot.id] && !matchingInputs?.files[slot.id])
   const usesSaved = slots.some(slot => !files[slot.id] && matchingInputs?.files[slot.id])
+  const canReapply = matchingInputs?.schemaChanged && !missingFiles
+  const tableSources = auto ? [
+    ...batch.map((file, index) => ({ id: `auto_${index + 1}`, label: `Ekspor PES ${index + 1}`, file })),
+    ...(files.sls_detail ? [{ id: 'sls_detail', label: 'Rincian SSLS', file: files.sls_detail }] : []),
+  ] : slots.flatMap(slot => {
+    const dataset = physical.find(item => item.id === slot.id)
+    const file = files[slot.id]
+    return file || dataset && detail.preview?.data[slot.id] ? [{ id: slot.id, label: slot.label, file, dataset }] : []
+  })
 
   useEffect(() => {
     const nextGrains = new Map(detail.draft.datasets.map(dataset => [dataset.id, dataset.grain]))
@@ -145,6 +156,16 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       onUpdate()
     } catch (failure) { setSourceError((failure as Error).message) }
     finally { setBusy(false) }
+  }
+
+  async function saveFromTable(definition: Definition, nextMappings?: Record<string, UploadMapping>) {
+    setBusy(true)
+    try {
+      await api(`/admin/dashboards/${detail.id}/draft`, 'PATCH', { definition, expectedRevision: detail.draftRevision, mappings: nextMappings })
+      if (nextMappings) setMappings(current => ({ ...current, ...nextMappings }))
+      setSuggestion(undefined)
+      onUpdate()
+    } finally { setBusy(false) }
   }
 
   function setMapping(slot: string, key: keyof Omit<UploadMapping, 'columns'>, value: string) {
@@ -269,9 +290,9 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       {custom && <section className="upload-sources form-stack" aria-label="Sumber data">
         <div className="editor-fields-heading">
           <div><h3>{slots.length} sumber data</h3><p className="muted-text">Sediakan satu berkas per sumber untuk kondisi baru.</p></div>
-          {detail.canManage && <button type="button" className="button" aria-expanded={addingSource} disabled={closed || busy || suggesting || processing || draftPending || slots.length >= 8} onClick={() => { setAddingSource(!addingSource); setSourceError('') }}><Plus size={16} /> Tambah sumber data</button>}
+          {detail.canManage && <button type="button" className="button" aria-expanded={addingSource} disabled={closed || busy || suggesting || processing || draftPending || detail.draft.datasets.length >= 8} onClick={() => { setAddingSource(!addingSource); setSourceError('') }}><Plus size={16} /> Tambah sumber data</button>}
         </div>
-        {detail.canManage && slots.length >= 8 && <p className="muted-text">Batas delapan sumber per dashboard tercapai.</p>}
+        {detail.canManage && detail.draft.datasets.length >= 8 && <p className="muted-text">Batas delapan sumber dan tabel hasil per dashboard tercapai.</p>}
         {addingSource && <form className="form-stack" onSubmit={addSource}>
           <label>Nama sumber baru<input name="sourceName" type="text" required maxLength={100} placeholder="Misalnya Progres pencacahan" autoFocus /></label>
           <button className="button primary" disabled={closed || busy || suggesting || processing || draftPending}>Simpan sumber</button>
@@ -282,7 +303,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
         <fieldset key={inputRevision} disabled={closed || busy || suggesting} className="form-stack bare-fieldset">
           <div className="form-columns"><label>Tanggal kondisi<input type="date" required value={date} onChange={event => setDate(event.target.value)} /></label><label>Jam kondisi (WIB)<input type="time" required value={time} onChange={event => setTime(event.target.value)} /></label></div>
           {savedInputs && !matchingInputs && <button type="button" className="button subtle" onClick={() => { setDate(savedInputs.date); setTime(savedInputs.time) }}>Pakai kondisi terakhir · {conditionDate(savedInputs.date)} · {savedInputs.time} WIB</button>}
-          {matchingInputs && <p className="muted-text">Berkas tersimpan dapat digunakan kembali pada kondisi ini. Pilih berkas baru untuk sumber yang ingin ditambah atau diganti.</p>}
+          {matchingInputs && <p className="muted-text">{canReapply ? 'Periksa ulang berkas tersimpan untuk menerapkan perubahan kolom atau penggabungan pada kondisi ini.' : 'Berkas tersimpan dapat digunakan kembali pada kondisi ini. Pilih berkas baru untuk sumber yang ingin ditambah atau diganti.'}</p>}
           {detail.template === 'susenas' && <label>Profil sumber<select value={workbook ? 'workbook' : 'separate'} onChange={event => { setWorkbook(event.target.value === 'workbook'); setSuggestion(undefined) }}><option value="workbook">Satu workbook Susenas dan Seruti</option><option value="separate">Berkas terpisah per dataset</option></select></label>}
           {detail.template === 'pes' && <label>Cara memilih berkas<select value={auto ? 'auto' : 'manual'} onChange={event => { setAuto(event.target.value === 'auto'); setSuggestion(undefined) }}><option value="auto">Deteksi otomatis</option><option value="manual">Pilih per dataset{detail.aiAvailable ? ' (manual atau Gemini)' : ''}</option></select></label>}
           <section className="form-stack csv-assist" aria-label="Bantuan Gemini">
@@ -328,13 +349,14 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
                 </fieldset>
                 {!workbook && slot.id !== 'sls_detail' && <fieldset className="form-stack mapping-group"><legend>Pemetaan kolom</legend>
                   <label>{detail.draft.datasets.find(item => item.id === slot.id)?.grain === 'person' ? 'Judul kolom nama atau kode petugas' : 'Judul kolom wilayah'}<input value={mappings[slot.id]?.region ?? ''} onChange={event => setMapping(slot.id, 'region', event.target.value)} placeholder="Otomatis" /></label>
-                  {slot.fields.filter(field => !field.derived && !field.formula).map(field => <label key={field.id}>{field.label}<input value={mappings[slot.id]?.columns?.[field.id] ?? ''} onChange={event => setColumn(slot.id, field.id, event.target.value)} placeholder="Judul sumber atau jalur JSON" /></label>)}
+                  {slot.fields.filter(field => field.enabled !== false && !field.derived && !field.formula).map(field => <label key={field.id}>{field.label}<input value={mappings[slot.id]?.columns?.[field.id] ?? ''} onChange={event => setColumn(slot.id, field.id, event.target.value)} placeholder="Judul sumber atau jalur JSON" /></label>)}
                 </fieldset>}
               </div>
             </details>)}
           </details>}
           {draftPending && <p className="muted-text" role="status">Pemeriksaan tersedia setelah draf tersimpan.</p>}
-          <button className="button primary" disabled={draftPending || processing || (auto ? batch.length !== 3 : missingFiles || !updatedFiles)}>{busy || processing ? 'Memproses…' : 'Periksa unggahan'}</button>
+          {!!tableSources.length && <a href="#tabel-sumber" className="text-button source-jump">Lihat tabel sumber <ArrowDown size={14} aria-hidden="true" /></a>}
+          <button className="button primary" disabled={draftPending || processing || (auto ? batch.length !== 3 : missingFiles || !updatedFiles && !canReapply)}>{busy || processing ? 'Memproses…' : 'Periksa unggahan'}</button>
         </fieldset>
       </form>
     </section>
@@ -351,11 +373,12 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       </Alert>}
       {suggestion && <div className="form-stack">
         <p>{suggestion.result.model} · {suggestion.result.rows} {suggestion.result.grain === 'person' ? 'petugas' : 'wilayah'} diperiksa{suggestion.result.mapping.sheet && ` · Lembar ${suggestion.result.mapping.sheet}`} · Baris judul {suggestion.result.mapping.headerRow}</p>
-        <dl><div><dt>{suggestion.result.grain === 'person' ? 'Identitas petugas' : 'Wilayah'}</dt><dd>{suggestion.result.mapping.region}</dd></div>
-          {suggestion.result.fields.map(field => <div key={field.id}><dt>{field.label}</dt><dd>{suggestion.result.mapping.columns?.[field.id]}
-            {suggestion.result.definition && <small className="suggestion-unit">{csvUnits[field.unit]}{field.scale === 'fraction' ? ' (0–1)' : field.scale === 'percentage' ? ' (0–100)' : ''}{!field.public ? ' · Privat' : ''}</small>}
-          </dd></div>)}
-        </dl>
+        <div className="table-scroll source-scroll" tabIndex={0} role="region" aria-label="Pemetaan yang disarankan"><table>
+          <thead><tr><th scope="col">Kolom</th><th scope="col">Judul sumber</th><th scope="col">Tipe</th></tr></thead>
+          <tbody><tr><th scope="row">{suggestion.result.grain === 'person' ? 'Identitas petugas' : 'Wilayah'}</th><td>{suggestion.result.mapping.region}</td><td>Kunci</td></tr>
+          {suggestion.result.fields.map(field => <tr key={field.id}><th scope="row">{field.label}</th><td>{suggestion.result.mapping.columns?.[field.id]}</td>
+            <td>{csvUnits[field.unit]}{field.scale === 'fraction' ? ' (0–1)' : field.scale === 'percentage' ? ' (0–100)' : ''}{!field.public ? ' · Privat' : ''}</td></tr>)}</tbody>
+        </table></div>
         {suggestion.result.definition && <p>Usulan mengganti kolom dan komponen untuk sumber {slots.find(slot => slot.id === suggestion.slot)?.label}.</p>}
         {Boolean(suggestion.result.recommendations?.length) && <div className="form-stack"><h3>Rekomendasi tampilan</h3>{suggestion.result.recommendations?.map(message => <p key={message}>{message}</p>)}</div>}
         {suggestion.result.warnings.map(message => <p key={message}>{message}</p>)}
@@ -401,6 +424,8 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       </button>) : <p className="empty-inline">Belum ada pekerjaan unggahan.</p>}</div>
     </section>
     </div>
+    {(tableSources.length > 0 || detail.draft.datasets.some(dataset => dataset.join)) && <SourceWorkbench detail={detail} sources={tableSources} mappings={mappings}
+      locked={closed || busy || suggesting || processing || draftPending} save={saveFromTable} />}
     {analysis && <CsvAnalysisDialog progress={analysis} open={showAnalysis} onClose={() => {
       setShowAnalysis(false)
       if (analysis.percent === 100) reviewRef.current?.focus()

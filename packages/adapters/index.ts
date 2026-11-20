@@ -1,7 +1,7 @@
 import { parse } from 'csv-parse/sync'
 import { unzipSync } from 'fflate'
 import * as xlsx from 'xlsx'
-import { dateSchema, timeSchema, type CollectionReport, type DataRow, type Dataset, type DatasetData, type Field, type Notice, type SnapshotData, type TemplateId, type UploadMapping, type Values } from '../contracts/index'
+import { activeFields, dateSchema, joinIdentity, timeSchema, type CollectionReport, type DataRow, type Dataset, type DatasetData, type Field, type Notice, type SnapshotData, type TemplateId, type UploadMapping, type Value, type Values } from '../contracts/index'
 import { analysisFormat } from '../contracts/csv-analysis'
 import { applyFormulas } from '../metrics/index'
 import { findRegion, pesRegions, sumbar } from '../../templates/regions'
@@ -238,7 +238,7 @@ function readStatusRows(parsed: Source, key: number, statuses: Field[], file: In
 export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMapping, pes: boolean): DatasetData {
   const isPerson = dataset.grain === 'person'
   const keys = mapping.region ? [normalize(mapping.region)] : isPerson ? personHeaders : regionHeaders
-  const inputFields = dataset.fields.filter(field => !field.formula && !field.derived)
+  const inputFields = activeFields(dataset).filter(field => !field.formula && !field.derived)
   const statuses = inputFields.filter(field => (dataset.id === 'sls' ? slsFields : statusFields).includes(field.id))
   const canPivot = pes && statuses.length === inputFields.length && !Object.keys(mapping.columns ?? {}).length
   const isLong = (headers: string[]) => canPivot && headers.some(header => statusHeaders.includes(header)) && headers.some(header => countHeaders.includes(header))
@@ -257,7 +257,7 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
     const column = mapping.columns?.[field.id]
     return { field, index: match(parsed.headers, column ? [column] : fieldHeaders(field), field.label, file.name, pes && !column && statuses.some(status => status.id === field.id)) }
   })
-  const reportedFields = dataset.fields.filter(field => field.formula).map(field => ({
+  const reportedFields = activeFields(dataset).filter(field => field.formula).map(field => ({
     field, index: match(parsed.headers, mapping.columns?.[field.id] ? [mapping.columns[field.id]] : [field.id, field.label, ...field.aliases], field.label, file.name, true),
   })).filter(field => field.index >= 0)
   if (fields.every(field => field.index === -1) || new Set([key, ...fields.map(field => field.index).filter(index => index >= 0)]).size !== fields.filter(field => field.index >= 0).length + 1) invalid('MAPPING_CONFLICT', 'Pilih kolom sumber yang berbeda untuk setiap indikator.', file.name)
@@ -295,6 +295,58 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
   }
   if (!rows.length) invalid('EMPTY_DATA', isPerson ? 'Tidak ada baris petugas yang dapat dibaca.' : 'Tidak ada baris kabupaten/kota yang dapat dibaca.', file.name)
   return applyFormulas(dataset, { rows, reported })
+}
+
+export function previewSource(file: InputFile, dataset: Dataset | undefined, mapping: UploadMapping) {
+  const isIdentity = (header: string) => mapping.region ? header === normalize(mapping.region) :
+    dataset?.grain === 'person' ? personHeaders.includes(personHeader(header)) :
+      regionHeaders.includes(header) || personHeaders.includes(personHeader(header))
+  const parsed = source(file, mapping, headers => headers.some(isIdentity))
+  const rows = parsed.rows.filter(row => row.cells.some(cell => cell != null && cell !== ''))
+  const columns = parsed.headers.map((label, index) => {
+    const entries = rows.filter(row => row.cells[index] != null && row.cells[index] !== '')
+    const values = entries.map(row => String(row.cells[index]).trim())
+    const numbers = values.map(value => numericInput(value.replace(/\s*%$/, '')))
+    const numeric = numbers.length > 0 && numbers.every(Number.isFinite)
+    const fractions = numeric && entries.every(row => row.percentColumns?.has(index))
+    const percentages = numeric && (fractions || /[%]|\bpersen\b/i.test(label) || values.every(value => value.endsWith('%')))
+    const codes = values.some(value => /^0\d+$/.test(value)) || /\b(kode|id|nip|nik)\b/i.test(label.replace(/[_-]/g, ' '))
+    const unit: Field['unit'] = percentages ? 'percent' : !numeric || codes ? 'category' :
+      numbers.every(value => Number.isSafeInteger(value) && value >= 0) ? 'count' : 'number'
+    return { label, unit, scale: percentages ? (fractions ? 'fraction' as const : 'percentage' as const) : undefined,
+      selectable: Boolean(label) && parsed.headers.indexOf(label) === index && parsed.headers.lastIndexOf(label) === index }
+  })
+  return {
+    columns, rows: rows.slice(0, 6).map(row => row.cells.map((cell, index): Value => row.percentColumns?.has(index) && typeof cell === 'number' ? `${Number((cell * 100).toFixed(2))}%` :
+      typeof cell === 'string' ? cell.slice(0, 200) : typeof cell === 'number' && Number.isFinite(cell) ? cell : null)),
+    count: rows.length, identity: parsed.headers.find(isIdentity), sheet: parsed.sheet, headerRow: parsed.headerRow,
+  }
+}
+
+export function joinDataset(dataset: Dataset, input: SnapshotData): { data: DatasetData; matched: number; unmatched: number } {
+  const join = dataset.join!
+  const left = input[join.left.dataset], right = input[join.right.dataset]
+  if (!left || !right) invalid('JOIN_SOURCE_REQUIRED', `Lengkapi kedua sumber untuk menggabungkan ${dataset.label}.`)
+  const valueKey = (row: DataRow, field: string) => normalize(field === joinIdentity ? row.code : row.values[field])
+  const lookup = new Map<string, DataRow>()
+  for (const row of right.rows) {
+    const key = valueKey(row, join.right.field)
+    if (!key) continue
+    if (lookup.has(key)) invalid('DUPLICATE_JOIN_KEY', `Kunci pada tabel pasangan untuk ${dataset.label} berulang. Pilih kolom lain yang unik.`, row.source)
+    lookup.set(key, row)
+  }
+  const fields = activeFields(dataset)
+  let matched = 0
+  const rows = left.rows.map(row => {
+    const other = lookup.get(valueKey(row, join.left.field))
+    if (other) matched++
+    const values = Object.fromEntries(fields.map(field => {
+      const column = join.columns[field.id]
+      return [field.id, (column.side === 'left' ? row : other)?.values[column.field] ?? null]
+    }))
+    return { code: row.code, name: row.name, values }
+  })
+  return { data: { rows }, matched, unmatched: rows.length - matched }
 }
 
 function susenasBlocks(file: InputFile, datasets: Dataset[], mapping: UploadMapping): SnapshotData {
@@ -462,10 +514,11 @@ export function normalizeUpload(template: TemplateId, datasets: Dataset[], files
     Object.assign(data, susenasBlocks(files.workbook, datasets, mappings.workbook ?? {}))
     collection = collectionReports(files.workbook)
   } else {
-    const expected = new Set(datasets.map(dataset => dataset.id))
+    const inputs = datasets.filter(dataset => !dataset.join)
+    const expected = new Set(inputs.map(dataset => dataset.id))
     if (template === 'pes') expected.add('sls_detail')
     if (Object.keys(files).some(key => !expected.has(key))) invalid('FILE_SLOTS', 'Terdapat slot berkas yang tidak diperlukan.')
-    for (const dataset of datasets) {
+    for (const dataset of inputs) {
       const file = files[dataset.id]
       if (!file) invalid('FILE_REQUIRED', `Pilih berkas ${dataset.label}.`)
       data[dataset.id] = readDataset(file, dataset, mappings[dataset.id] ?? {}, template === 'pes')
@@ -484,9 +537,15 @@ export function normalizeUpload(template: TemplateId, datasets: Dataset[], files
     if (same) invalid('DUPLICATE_INPUT', 'Berkas Non-UB dan UB berisi nilai yang sama. Periksa pilihan berkas.')
     if (files.sls_detail) data.sls.detail = readSlsDetail(files.sls_detail, data.sls, mappings.sls_detail ?? {})
   }
+  for (const dataset of datasets.filter(item => item.join)) {
+    const joined = joinDataset(dataset, data)
+    data[dataset.id] = joined.data
+    if (joined.unmatched) warnings.push({ code: 'UNMATCHED_JOIN_ROWS', message: `${dataset.label}: ${joined.unmatched} baris dari tabel utama tidak punya pasangan. Kolom pasangannya dikosongkan.` })
+  }
   for (const [id, dataset] of Object.entries(data)) {
     if (template === 'susenas' && !dataset.reported) warnings.push({ code: 'NO_PROVINCE', message: `Rekap provinsi resmi ${id} belum tersedia.` })
-    const fields = datasets.find(item => item.id === id)?.fields ?? []
+    const definition = datasets.find(item => item.id === id)
+    const fields = definition ? activeFields(definition) : []
     for (const field of fields.filter(field => field.formula)) {
       const missing = dataset.rows.filter(row => row.values[field.id] == null).length
       if (missing) warnings.push({ code: 'FORMULA_EMPTY', message: `${field.label} kosong pada ${missing} wilayah. Periksa komponen rumus.` })

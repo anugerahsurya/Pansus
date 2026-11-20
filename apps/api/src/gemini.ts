@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { calculatePesDataset, ImportError, profileAnalysisFile, readDataset, type InputFile } from '../../../packages/adapters/index'
-import { definitionSchema, type Dataset, type DatasetData, type Definition, type Field, type TemplateId, type UploadMapping, type Widget } from '../../../packages/contracts/index'
+import { activeFields, definitionSchema, type Dataset, type DatasetData, type Definition, type Field, type TemplateId, type UploadMapping, type Widget } from '../../../packages/contracts/index'
 import { donutCategoryLimit, singleBarLimit } from '../../../packages/contracts/visualization'
 import type { CsvAnalysisStage, GeminiStatus } from '../../../packages/contracts/csv-analysis'
 import { pesRegions } from '../../../templates/regions'
@@ -83,7 +83,7 @@ function safeColumns(profile: Profile, withPerson = false) {
 const safeLabel = (text: string) => /[@<>\r\n]|\d{7,}/.test(text) ? undefined : text
 
 function fixedMapping(result: z.infer<typeof mappingSchema>, columns: Column[], dataset: Dataset, pes: boolean) {
-  const fields = dataset.fields.filter(field => !field.derived && !field.formula)
+  const fields = activeFields(dataset).filter(field => !field.derived && !field.formula)
   const output: Record<string, string> = Object.create(null)
   const used = new Set([result.region])
   for (const item of result.fields) {
@@ -224,7 +224,7 @@ export async function suggestCsv(options: DraftOptions, fetcher: typeof fetch = 
   const safe = columns.filter(column => !column.person && (column.kind !== 'category' || column.region))
   const omitted = profile.columns.filter(column => !columns.includes(column)).length
   const schema = options.design ? designSchema : mappingSchema
-  const expected = options.dataset.fields.filter(field => !field.derived && !field.formula)
+  const expected = activeFields(options.dataset).filter(field => !field.derived && !field.formula)
   const prompt = {
     mode: options.design ? 'draft' : 'mapping', template: options.template, slot: options.dataset.id, grain: person ? 'person' : 'district',
     columns: columns.map(({ header, index, region, explicitRegion, kind, unitInterval, nullable }) => ({ index, region, explicitRegion, kind, person: person && regionColumns.some(column => column.index === index), unitInterval, nullable, header: safe.some(item => item.index === index) ? header : undefined })),

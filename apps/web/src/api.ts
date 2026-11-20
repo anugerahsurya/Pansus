@@ -62,7 +62,7 @@ export type DashboardDetail = Omit<DashboardItem, 'title'> & {
   activePersonal?: boolean;
   operators: { id: string; name: string; email: string; assigned: boolean }[]; grants: { id: string; mode: 'link' | 'invite'; email?: string; expires?: number }[];
   mappings: Record<string, UploadMapping>; preview: Report | null; jobs: Pick<ImportJob, 'id' | 'status' | 'date' | 'time' | 'files' | 'createdAt'>[];
-  savedInputs?: Condition & { snapshotId: string; files: Record<string, string> };
+  savedInputs?: Condition & { snapshotId: string; files: Record<string, string>; schemaChanged?: boolean };
 }
 export type CsvSuggestion = {
   model: string; mapping: UploadMapping; definition?: Definition; expectedRevision: number;

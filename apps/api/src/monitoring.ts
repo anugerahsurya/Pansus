@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { hash as passwordHash, verify, Algorithm } from '@node-rs/argon2'
 import { z } from 'zod'
-import { dateSchema, definitionSchema, timeSchema, type CollectionReport, type Condition, type Dataset, type Definition, type Notice, type Report, type SnapshotData, type TemplateId, type UploadMapping, type Visibility } from '../../../packages/contracts/index'
+import { activeFields, dateSchema, definitionSchema, timeSchema, type CollectionReport, type Condition, type Dataset, type Definition, type Notice, type Report, type SnapshotData, type TemplateId, type UploadMapping, type Visibility } from '../../../packages/contracts/index'
 import type { CsvAnalysisStage } from '../../../packages/contracts/csv-analysis'
 import type { MemberRole, SuperadminPolicy } from '../../../packages/contracts/accounts'
 import { aggregate, applyFormulas, previousDay } from '../../../packages/metrics/index'
 import { compileFormulas, evaluate, parseFormula } from '../../../packages/metrics/formula'
-import { ImportError, normalizeUpload, type InputFile } from '../../../packages/adapters/index'
+import { ImportError, joinDataset, normalizeUpload, previewSource, readDataset, type InputFile } from '../../../packages/adapters/index'
 import { templateDefinition, templates } from '../../../templates/index'
 import { exampleDates, exampleFiles } from '../../../fixtures/synthetic/index'
 import { account, audit, datasetSignature, fail, hash, now, permissions, superadminPolicy, superadminPolicyKey, token, type AccessSession, type Dashboard, type Grant, type ImportJob, type Proof, type Release, type Session, type Snapshot, type User } from './model'
@@ -61,12 +61,13 @@ function snapshotData(definition: Definition, snapshot: Snapshot, publicOnly: bo
     const source = snapshot.data[dataset.id]
     if (!source || !sameGrain(snapshot, dataset)) return []
     const normalized = applyFormulas(dataset, source)
-    const project = (values: Record<string, string | number | null>) => Object.fromEntries(dataset.fields.filter(field => !publicOnly || field.public).map(field => [field.id, values[field.id] ?? null]))
+    const fields = activeFields(dataset).filter(field => !publicOnly || field.public)
+    const project = (values: Record<string, string | number | null>) => Object.fromEntries(fields.map(field => [field.id, values[field.id] ?? null]))
     const projectRow = ({ source, ...row }: (typeof normalized.rows)[number]) => ({ ...row, ...(!publicOnly ? { source } : {}), values: project(row.values) })
     return [[dataset.id, { rows: normalized.rows.map(projectRow), reported: normalized.reported && project(normalized.reported), detail: (!publicOnly || dataset.publicDetail) ? normalized.detail?.map(projectRow) : undefined }]]
   }))
 }
-const publicDefinition = (definition: Definition): Definition => ({ ...definition, datasets: definition.datasets.map(dataset => ({ ...dataset, fields: dataset.fields.filter(field => field.public).map(({ aliases: _aliases, ...field }) => ({ ...field, aliases: [] })) })) })
+const publicDefinition = (definition: Definition): Definition => ({ ...definition, datasets: definition.datasets.map(({ join: _join, ...dataset }) => ({ ...dataset, fields: activeFields(dataset).filter(field => field.public).map(({ aliases: _aliases, ...field }) => ({ ...field, aliases: [] })) })) })
 
 export class Monitoring {
   private readonly attempts = new Map<string, { count: number; until: number }>()
@@ -354,7 +355,8 @@ export class Monitoring {
         operators: manage ? db.list<User>('user:').filter(member => member.role === 'operator' && member.tenant === dashboard.tenant).map(member => ({ id: member.id, name: member.name, email: member.email, assigned: operators.includes(member.id) })) : [],
         jobs: jobs.map(({ data: _data, hash: _hash, mappings: _mappings, reusedFiles: _reusedFiles, baseSnapshotId: _baseSnapshotId, ...job }) => job),
         activePersonal: active ? hasPersonalRows(active.definition) : false,
-        savedInputs: snapshot && applied && { snapshotId: applied.snapshotId, date: applied.date, time: applied.time, files: reusableInputs(dashboard, snapshot, applied) },
+        savedInputs: snapshot && applied && { snapshotId: applied.snapshotId, date: applied.date, time: applied.time,
+          files: reusableInputs(dashboard, snapshot, applied), schemaChanged: snapshot.signature !== datasetSignature(dashboard.draft) },
         preview: dashboard.snapshotIds.length ? this.report(db, dashboard) : null,
       }
     })
@@ -367,7 +369,7 @@ export class Monitoring {
       const original = templateDefinition(dashboard.template)
       if (dashboard.template !== 'custom' && (definition.datasets.length !== original.datasets.length || original.datasets.some(dataset => {
         const next = definition.datasets.find(item => item.id === dataset.id)
-        return !next || next.grain !== dataset.grain || dataset.fields.some(field => !next.fields.some(item => item.id === field.id && item.unit === field.unit && item.scale === field.scale && item.derived === field.derived))
+        return !next || next.join || next.grain !== dataset.grain || dataset.fields.some(field => !activeFields(next).some(item => item.id === field.id && item.unit === field.unit && item.scale === field.scale && item.derived === field.derived))
       }))) fail(422, 'REQUIRED_TEMPLATE_FIELDS', 'Kolom baku template diperlukan untuk membaca sumber kegiatan.')
       if (body.mappings && Object.keys(body.mappings).some(id => !definition.datasets.some(dataset => dataset.id === id))) {
         fail(422, 'INVALID_MAPPING', 'Pemetaan harus merujuk ke dataset pada draf.')
@@ -393,7 +395,7 @@ export class Monitoring {
     })
     assertOpen(dashboard)
     const dataset = dashboard.draft.datasets.find(item => item.id === input.slot)
-    if (!dataset) fail(422, 'AI_SLOT', 'Pilih dataset yang tersedia pada draf.')
+    if (!dataset || dataset.join) fail(422, 'AI_SLOT', 'Pilih sumber berkas yang tersedia pada draf.')
     const design = dashboard.template === 'custom' && !snapshot?.data[dataset.id] && !dashboard.mappings[dataset.id]?.region && manage
     this.rate(`gemini:${user.id}`)
     try {
@@ -408,21 +410,69 @@ export class Monitoring {
     return { status: await checkGeminiStatus() }
   }
 
+  async inspectSource(credentials: Credentials, id: string, slot: string, file: InputFile, mapping: UploadMapping) {
+    const dataset = await this.store.read(db => {
+      const { dashboard } = this.protect(db, credentials, id)
+      const dataset = dashboard.draft.datasets.find(item => item.id === slot && !item.join)
+      const isTemplateInput = dashboard.template === 'pes' && /^(auto_[123]|sls_detail)$/.test(slot) || dashboard.template === 'susenas' && slot === 'workbook'
+      if (!dataset && !isTemplateInput) fail(422, 'INVALID_SOURCE', 'Sumber berkas tidak tersedia pada draf.')
+      return dataset
+    })
+    try { return previewSource(file, dataset, mapping) }
+    catch (error) {
+      if (error instanceof ImportError) fail(422, error.notice.code, error.message, error.notice.location)
+      throw error
+    }
+  }
+
+  async previewJoin(credentials: Credentials, id: string, expectedRevision: number, candidate: unknown, files: Record<string, InputFile>, mappings: Record<string, UploadMapping>) {
+    const { dashboard, snapshot } = await this.store.read(db => {
+      const { dashboard } = this.protect(db, credentials, id, true)
+      assertOpen(dashboard)
+      if (dashboard.template !== 'custom') fail(422, 'JOIN_CUSTOM_ONLY', 'Penggabungan tersedia pada dashboard Susun sendiri.')
+      checkRevision(dashboard.draftRevision, expectedRevision)
+      return { dashboard, snapshot: latestSnapshot(db, dashboard) }
+    })
+    const dataset = safeDefinition({ ...dashboard.draft, datasets: [...dashboard.draft.datasets, candidate] }).datasets.at(-1)!
+    if (!dataset.join) fail(422, 'INVALID_JOIN', 'Pilih hubungan antara dua sumber.')
+    const sourceIds = [dataset.join.left.dataset, dataset.join.right.dataset]
+    if (Object.keys(files).length && (Object.keys(files).length !== 2 || sourceIds.some(slot => !Object.hasOwn(files, slot)))) {
+      fail(422, 'JOIN_SOURCE_REQUIRED', 'Pilih berkas baru untuk kedua sumber, atau gunakan kedua sumber dari kondisi yang sudah diterapkan.')
+    }
+    try {
+      const data = Object.fromEntries(sourceIds.map(slot => {
+        const source = dashboard.draft.datasets.find(item => item.id === slot)!
+        const file = files[slot]
+        const current = snapshot && sameGrain(snapshot, source) ? snapshot.data[slot] : undefined
+        if (file) return [slot, readDataset(file, source, mappings[slot] ?? dashboard.mappings[slot] ?? {}, false)]
+        if (!current) fail(422, 'JOIN_SOURCE_REQUIRED', 'Pilih berkas untuk kedua sumber sebelum memeriksa hasil penggabungan.')
+        return [slot, applyFormulas(source, current)]
+      }))
+      const result = joinDataset(dataset, data)
+      return { matched: result.matched, unmatched: result.unmatched, rows: result.data.rows.slice(0, 6), condition: Object.keys(files).length ? undefined : snapshot && { date: snapshot.date, time: snapshot.time } }
+    } catch (error) {
+      if (error instanceof ImportError) fail(422, error.notice.code, error.message, error.notice.location)
+      throw error
+    }
+  }
+
   async prepare(credentials: Credentials, id: string, condition: Condition, files: Record<string, InputFile>, inputMappings: Record<string, UploadMapping> | undefined, reuseSnapshot?: string) {
-    const { user, dashboard, applied } = await this.store.read(db => {
+    const { user, dashboard, applied, schemaChanged } = await this.store.read(db => {
       const auth = this.protect(db, credentials, id)
-      if (!reuseSnapshot) return { ...auth, applied: undefined }
+      if (!reuseSnapshot) return { ...auth, applied: undefined, schemaChanged: false }
       const snapshot = latestSnapshot(db, auth.dashboard)
       if (auth.dashboard.template !== 'custom' || snapshot?.id !== reuseSnapshot || byCondition(condition, snapshot) !== 0) {
         fail(409, 'SOURCE_CONDITION_CHANGED', 'Kondisi sumber tersimpan berubah. Muat ulang halaman dan periksa berkas untuk kondisi ini.')
       }
       const job = db.list<ImportJob>('import:').find(job => job.dashboardId === id && job.status === 'published' && job.snapshotId === snapshot.id)
       if (!job) fail(409, 'SOURCE_CONDITION_CHANGED', 'Berkas untuk kondisi ini perlu diunggah kembali.')
-      return { ...auth, applied: { ...job, files: reusableInputs(auth.dashboard, snapshot, job) } }
+      return { ...auth, applied: { ...job, files: reusableInputs(auth.dashboard, snapshot, job) }, schemaChanged: snapshot.signature !== datasetSignature(auth.dashboard.draft) }
     })
     assertOpen(dashboard)
     const slots = Object.keys(files)
-    if (!slots.length) fail(422, 'FILE_REQUIRED', 'Pilih setidaknya satu berkas untuk diunggah.')
+    if (!slots.length && (!schemaChanged || dashboard.draft.datasets.some(dataset => !dataset.join && !Object.hasOwn(applied?.files ?? {}, dataset.id)))) {
+      fail(422, 'FILE_REQUIRED', 'Pilih setidaknya satu berkas untuk diunggah.')
+    }
     const reused = applied ? await Promise.all(dashboard.draft.datasets.filter(({ id }) => !Object.hasOwn(files, id) && Object.hasOwn(applied.files, id)).map(async ({ id: slot, label }) => {
       const objectJob = applied.reusedFiles?.[slot] ?? applied.id
       try {

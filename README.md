@@ -73,6 +73,12 @@ Isi `GEMINI_API_KEY` pada lingkungan API. Di **Studio → Perbarui data**, ungga
 
 Untuk progres petugas, gunakan satu baris per orang dan satu kolom identitas unik seperti `nama petugas` atau `kode petugas`. Sertakan kolom `Progres (%)` atau pasangan aktual dan target. Pada dashboard **Susun sendiri**, Gemini dapat menyarankan tabel dengan kelompok **100% atau lebih**, **50%–<100%**, **Di bawah 50%**, dan **Belum ada angka**. Susunan manual tersedia melalui **Editor → Kolom data** dan **Komponen**. Rilis yang memuat rincian per orang menggunakan hak baca undangan.
 
+### Tabel sumber dan penggabungan
+
+Di **Studio → Perbarui data → Tabel sumber**, setiap berkas yang dipilih memiliki pratinjau sendiri. Pada dashboard **Susun sendiri**, **Edit kolom** mengatur kolom yang dipakai, judul di berkas, tipe, dan akses pembaca.
+
+Pilih **Hubungkan kolom**, klik kunci tabel utama dan tabel pasangan, lalu pilih kolom hasil. **Periksa penggabungan** menunjukkan jumlah baris yang cocok dan pratinjau. Semua baris utama dipertahankan, sedangkan kunci tabel pasangan harus unik. Hasil yang disimpan bisa dipakai sebagai dataset pada **Editor → Komponen** dan dihitung ulang saat unggahan berikutnya diperiksa. Untuk menerapkan perubahan ke kondisi terakhir, periksa ulang berkas tersimpan dari kondisi tersebut.
+
 Pansus hanya mengirim judul kolom yang lolos penyaringan, tipe nilai, dan ID struktur template. Isi baris, angka sumber, dan nama berkas tetap di Pansus. Server mengecek usulan terhadap seluruh CSV dan aturan template, termasuk cakupan serta target SLS/UB. Kolom kategori pada draf baru bersifat privat. Periksa usulan, terapkan ke draf atau pemetaan, lalu lanjutkan pemeriksaan dan konfirmasi impor yang biasa.
 
 Urutan bawaan ialah Gemini 4 Carbon, Argon, Hydrogen, 3.8 Flash, 3.5 Flash-Lite, lalu 3.1 Flash-Lite. Saat model tidak tersedia, terkena kuota, kehabisan waktu, atau mengembalikan usulan yang tidak valid, API mencoba model berikutnya. Pengguna tetap dapat memakai pemetaan manual atau deteksi lokal PES.

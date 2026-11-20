@@ -1,4 +1,5 @@
 import type { Dataset, Values } from '../contracts/index'
+import { activeFields } from '../contracts/fields'
 
 type Op = '+' | '-' | '*' | '/'
 type Expression = { type: 'number'; value: number } | { type: 'field'; id: string } | { type: 'negative'; node: Expression } | { type: 'binary'; op: Op; left: Expression; right: Expression }
@@ -69,7 +70,7 @@ export function evaluate(expression: Expression, values: Values): { value: numbe
 }
 
 export function compileFormulas(dataset: Dataset) {
-  const fields = new Map(dataset.fields.map(field => [field.id, field]))
+  const fields = new Map(activeFields(dataset).map(field => [field.id, field]))
   const sorted = new Map<string, Expression>()
   function verifyUnits(node: Expression): string | undefined {
     if (node.type === 'number') return undefined
@@ -100,6 +101,6 @@ export function compileFormulas(dataset: Dataset) {
     verifyUnits(tree.expression)
     sorted.set(id, tree.expression)
   }
-  dataset.fields.forEach(field => visit(field.id, []))
+  fields.forEach(field => visit(field.id, []))
   return sorted
 }

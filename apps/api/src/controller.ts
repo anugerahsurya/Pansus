@@ -37,6 +37,11 @@ const personName = z.string().trim().min(2).max(100)
 const policy = z.object({ dashboards: z.boolean(), users: z.boolean() })
 const secret = z.string().regex(/^[\w-]{43}$/)
 const reason = z.string().trim().min(3).max(300)
+function uploadJson(value: string | undefined): unknown {
+  if (!value) return undefined
+  try { return JSON.parse(value) }
+  catch { fail(422, 'INVALID_MAPPING', 'Pengaturan unggahan tidak valid.') }
+}
 
 @Controller()
 export class ControllerRoutes {
@@ -136,6 +141,27 @@ export class ControllerRoutes {
   }
   @Patch('admin/dashboards/:id/draft') save(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     return this.app.saveDraft(credentials(req), id, payload(z.object({ definition: z.unknown(), expectedRevision: revision, mappings: mappingsSchema.optional() }), body))
+  }
+  @Post('admin/dashboards/:id/source-preview')
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 2, fieldSize: 25_000, parts: 4 } }))
+  sourcePreview(@Req() req: Request, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
+    const { slot, mapping } = payload(z.object({ slot: idSchema, mapping: z.string().max(20_000).optional() }), body)
+    const file = files?.[0]
+    if (file?.fieldname !== 'file') fail(422, 'FILE_REQUIRED', 'Pilih satu berkas untuk membuka pratinjau.')
+    const mapped = payload(mappingsSchema, { [slot]: uploadJson(mapping) ?? {} })
+    return this.app.inspectSource(credentials(req), id, slot, { name: file.originalname.slice(0, 140), bytes: file.buffer }, mapped[slot])
+  }
+  @Post('admin/dashboards/:id/join-preview')
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 2, fields: 3, fieldSize: 25_000, parts: 6 } }))
+  joinPreview(@Req() req: Request, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
+    const input = payload(z.object({ expectedRevision: z.coerce.number().int().nonnegative(), dataset: z.string().max(24_000), mappings: z.string().max(20_000).optional() }), body)
+    const mapped = Object.create(null) as Record<string, InputFile>
+    for (const file of files ?? []) {
+      const key = payload(idSchema, file.fieldname)
+      if (Object.hasOwn(mapped, key)) fail(422, 'DUPLICATE_SLOT', 'Pilih satu berkas per sumber.')
+      mapped[key] = { name: file.originalname.slice(0, 140), bytes: file.buffer }
+    }
+    return this.app.previewJoin(credentials(req), id, input.expectedRevision, uploadJson(input.dataset), mapped, payload(mappingsSchema, uploadJson(input.mappings) ?? {}))
   }
   @Post('admin/dashboards/:id/imports')
   @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 8, fields: 4, fieldSize: 25_000, parts: 12 } }))

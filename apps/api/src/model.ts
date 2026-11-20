@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { HttpException } from '@nestjs/common'
-import type { CollectionReport, Condition, Dataset, Definition, Notice, SnapshotData, TemplateId, UploadMapping, Visibility } from '../../../packages/contracts/index'
+import { activeFields, type CollectionReport, type Condition, type Dataset, type Definition, type Notice, type SnapshotData, type TemplateId, type UploadMapping, type Visibility } from '../../../packages/contracts/index'
 import type { Records } from './store'
 import { defaultSuperadminPolicy, type Account, type AccountPermissions, type Role, type SuperadminPolicy } from '../../../packages/contracts/accounts'
 
@@ -47,5 +47,12 @@ export function audit(records: Records, user: string, action: string, dashboard:
   records.put('audit:' + token(), { user, action, dashboardId: dashboard.id, tenant: dashboard.tenant, at: now(), ...details })
 }
 export function datasetSignature(definition: Definition) {
-  return hash(JSON.stringify(definition.datasets.map(dataset => [dataset.id, dataset.grain, dataset.fields.map(({ id, unit, scale, formula, derived }) => [id, unit, scale, formula, derived]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) ]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))))
+  const signatures = definition.datasets.map(dataset => {
+    const enabled = activeFields(dataset).toSorted((a, b) => a.id.localeCompare(b.id))
+    const fields = enabled.map(({ id, unit, scale, formula, derived }) => [id, unit, scale, formula, derived])
+    const signature: unknown[] = [dataset.id, dataset.grain, fields]
+    if (dataset.join) signature.push([dataset.join.left, dataset.join.right, enabled.map(field => [field.id, dataset.join!.columns[field.id]])])
+    return signature
+  }).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+  return hash(JSON.stringify(signatures))
 }

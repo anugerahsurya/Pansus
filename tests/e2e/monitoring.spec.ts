@@ -7,6 +7,7 @@ import { exampleFiles } from '../../fixtures/synthetic/index'
 
 const secret = 'Monitoring!2026'
 const headers = { 'X-Monitoring-Request': '1' }
+const uploadInput = (page: Page, label: string) => page.locator('input[type=file]').and(page.getByLabel(label, { exact: true }))
 const fixture = (day: 0 | 1) => {
   const files = exampleFiles('pes', day)
   for (const slot of ['sls', 'nonub', 'ub']) {
@@ -78,7 +79,7 @@ test('unggahan Excel mengaktifkan tombol Gemini dan pop-up progres sampai hasil 
   await page.goto(`/studio/${id}?tab=data`)
   const book = xlsx.utils.book_new()
   xlsx.utils.book_append_sheet(book, xlsx.utils.aoa_to_sheet([['wilayah', 'target', 'selesai'], ['1303', 10, 5]]), 'Progres')
-  await page.getByLabel('Wilayah', { exact: true }).setInputFiles({
+  await uploadInput(page, 'Wilayah').setInputFiles({
     name: 'progres.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from(xlsx.write(book, { type: 'array', bookType: 'xlsx' })),
   })
   const analyze = page.getByRole('button', { name: 'Analisis Excel Wilayah' })
@@ -117,14 +118,14 @@ test('Bantuan Gemini terlihat pada profil bawaan dan memberi petunjuk sesuai ket
   await expect(help.getByText('Terhubung')).toBeVisible()
   await help.getByRole('button', { name: 'Pilih berkas per dataset' }).click()
   await expect(page.getByLabel('Cara memilih berkas')).toHaveValue('manual')
-  const source = page.getByLabel('Non-UB', { exact: true })
+  const source = uploadInput(page, 'Non-UB')
   await source.setInputFiles({
     name: 'nonub.csv', mimeType: 'text/csv', buffer: Buffer.from('wilayah,target,selesai\n1303,10,5'),
   })
   await expect(help.getByRole('button', { name: 'Analisis CSV Non-UB', exact: true })).toBeEnabled()
 })
 
-test('draf Gemini dapat ditambah kolom dan sumber CSV bertahap untuk kondisi yang sama', async ({ page }) => {
+test('tabel sumber dapat mengatur kolom dan menyimpan join untuk pembaruan berikutnya', async ({ page }) => {
   await login(page.request)
   const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
   const { id } = await created.json()
@@ -148,7 +149,7 @@ test('draf Gemini dapat ditambah kolom dan sumber CSV bertahap untuk kondisi yan
   await page.goto(`/studio/${id}?tab=data`)
   await page.getByLabel('Tanggal kondisi').fill('2026-11-14')
   await page.getByLabel('Jam kondisi (WIB)').fill('13:00')
-  await page.getByLabel('Wilayah', { exact: true }).setInputFiles(csv('progres.csv', 'wilayah,sasaran,realisasi,catatan\n1303,10,5,Lengkap'))
+  await uploadInput(page, 'Wilayah').setInputFiles(csv('progres.csv', 'wilayah,sasaran,realisasi,catatan\n1303,10,5,Lengkap'))
   await page.getByRole('button', { name: 'Analisis CSV Wilayah' }).click()
   await page.getByRole('button', { name: 'Lihat usulan' }).click()
   await page.getByRole('button', { name: 'Terapkan ke draf' }).click()
@@ -179,22 +180,51 @@ test('draf Gemini dapat ditambah kolom dan sumber CSV bertahap untuk kondisi yan
     await expect(page.getByText(message)).toBeVisible()
   }
   await page.getByRole('button', { name: 'Perbarui data', exact: true }).click()
-  await expect(page.getByLabel('Wilayah', { exact: true })).toHaveJSProperty('value', 'C:\\fakepath\\progres.csv')
+  await expect(uploadInput(page, 'Wilayah')).toHaveJSProperty('value', 'C:\\fakepath\\progres.csv')
+  const tables = page.getByRole('region', { name: 'Tabel sumber' })
+  const wilayah = tables.getByRole('article', { name: 'Wilayah', exact: true })
+  await expect(wilayah.getByRole('cell', { name: 'Lengkap' })).toBeVisible()
+  await wilayah.getByRole('button', { name: 'Edit kolom' }).click()
+  await wilayah.getByRole('checkbox', { name: 'Gunakan Catatan' }).uncheck()
+  await wilayah.getByRole('button', { name: 'Simpan kolom' }).click()
+  await expect(wilayah.getByText('Tidak dipakai')).toBeVisible()
   await apply()
   await page.getByRole('button', { name: 'Tambah sumber data' }).click()
   await page.getByLabel('Nama sumber baru').fill('Validasi')
   await page.getByRole('button', { name: 'Simpan sumber' }).click()
   await expect(page.getByRole('heading', { name: '2 sumber data' })).toBeVisible()
   await expect(page.getByText('Tersimpan · progres.csv')).toBeVisible()
-  await page.getByLabel('Validasi', { exact: true }).setInputFiles(csv('validasi.csv', 'wilayah,nilai\n1303,2'))
+  await uploadInput(page, 'Validasi').setInputFiles(csv('validasi.csv', 'wilayah,nilai\n1303,2'))
   await page.getByLabel('Jam kondisi (WIB)').fill('14:00')
   await expect(check).toBeDisabled()
   await page.getByRole('button', { name: /Pakai kondisi terakhir/ }).click()
   await apply()
+  const beforeJoin = await (await page.request.get(path)).json()
+  expect(beforeJoin.preview.data.wilayah.rows[0].values.selesai).toBe(5)
+  expect(beforeJoin.preview.data[beforeJoin.draft.datasets[1].id].rows[0].values.nilai).toBe(2)
+
+  await tables.getByRole('button', { name: 'Hubungkan kolom' }).click()
+  await tables.getByRole('button', { name: 'Pilih kunci Wilayah · Identitas' }).click()
+  await tables.getByRole('button', { name: 'Pilih kunci Validasi · Identitas' }).click()
+  await tables.getByLabel('Nama tabel hasil').fill('Gabungan wilayah')
+  let finishJoin!: () => void
+  const canFinish = new Promise<void>(resolve => { finishJoin = resolve })
+  await page.route(`**${path}/join-preview`, async route => {
+    await canFinish
+    await route.continue()
+  })
+  await tables.getByRole('button', { name: 'Periksa penggabungan' }).click()
+  await expect(tables.getByRole('progressbar', { name: 'Progres penggabungan' })).toBeVisible()
+  finishJoin()
+  await expect(tables.getByText(/1 cocok · 0 tanpa pasangan/)).toBeVisible()
+  await tables.getByRole('button', { name: 'Simpan penggabungan' }).click()
+  await expect(tables.getByRole('heading', { name: 'Hubungan tersimpan' })).toBeVisible()
+  await apply()
   const after = await (await page.request.get(path)).json()
   expect(Object.keys(after.savedInputs.files)).toEqual(expect.arrayContaining(['wilayah', after.draft.datasets[1].id]))
-  expect(after.preview.data.wilayah.rows[0].values.selesai).toBe(5)
-  expect(after.preview.data[after.draft.datasets[1].id].rows[0].values.nilai).toBe(2)
+  const joined = after.draft.datasets.find((dataset: { join?: unknown }) => dataset.join)
+  expect(after.preview.data[joined.id].rows[0].values).toEqual({ gabungan_1: 10, gabungan_2: 5, gabungan_3: 2 })
+  expect(Object.keys(after.savedInputs.files)).toHaveLength(2)
 
   const published = await page.request.post(`${path}/publish`, { headers, data: { visibility: 'public', expectedRevision: after.draftRevision } })
   expect(published.ok()).toBeTruthy()
@@ -202,13 +232,14 @@ test('draf Gemini dapat ditambah kolom dan sumber CSV bertahap untuk kondisi yan
   await expect(page.getByRole('heading', { name: '2 sumber data' })).toBeVisible()
   await page.getByLabel('Tanggal kondisi').fill('2026-11-15')
   await page.getByLabel('Jam kondisi (WIB)').fill('14:00')
-  await page.getByLabel('Wilayah', { exact: true }).setInputFiles(csv('progres-baru.csv', 'wilayah,sasaran,realisasi,catatan\n1303,10,8,Lengkap'))
+  await uploadInput(page, 'Wilayah').setInputFiles(csv('progres-baru.csv', 'wilayah,sasaran,realisasi\n1303,10,8'))
   await expect(check).toBeDisabled()
-  await page.getByLabel('Validasi', { exact: true }).setInputFiles(csv('validasi-baru.csv', 'wilayah,nilai\n1303,3'))
+  await uploadInput(page, 'Validasi').setInputFiles(csv('validasi-baru.csv', 'wilayah,nilai\n1303,3'))
   await apply(/Pembaruan tersimpan/)
   const report = await (await page.request.get(`/api/d/${after.slug}`)).json()
   expect(report.condition).toEqual({ date: '2026-11-15', time: '14:00' })
   expect(report.data.wilayah.rows[0].values.selesai).toBe(8)
+  expect(report.data[joined.id].rows[0].values).toEqual({ gabungan_1: 10, gabungan_2: 8 })
   expect(report.definition.theme).toBe('economy')
 })
 
@@ -282,7 +313,7 @@ async function uploadFromStudio(page: Page, day: 0 | 1) {
   } else {
     await page.getByLabel('Cara memilih berkas').selectOption('manual')
     for (const [label, slot] of [['SLS', 'sls'], ['Non-UB', 'nonub'], ['UB', 'ub']] as const) {
-      await page.getByLabel(label, { exact: true }).setInputFiles(payload(slot))
+      await uploadInput(page, label).setInputFiles(payload(slot))
     }
   }
   await page.getByRole('button', { name: 'Periksa unggahan' }).click()

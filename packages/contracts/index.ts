@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { activeFields } from './fields'
+export { activeFields } from './fields'
 
 export const idSchema = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/).refine(id => id !== 'constructor' && id !== 'prototype')
 export const dateSchema = z.iso.date()
@@ -12,12 +14,18 @@ const fieldSchema = z.object({
   id: idSchema, label: z.string().trim().min(1).max(100),
   unit: z.enum(['count', 'number', 'percent', 'category']), aliases: z.array(z.string().min(1).max(120)).max(16).default([]),
   scale: z.enum(['fraction', 'percentage']).optional(), nullable: z.boolean().default(true),
-  public: z.boolean().default(true), derived: z.boolean().optional(),
+  public: z.boolean().default(true), derived: z.boolean().optional(), enabled: z.boolean().optional(),
   formula: z.string().trim().min(1).max(256).optional(),
+})
+export const joinIdentity = '$row'
+const joinKey = z.object({ dataset: idSchema, field: z.union([idSchema, z.literal(joinIdentity)]) })
+export const joinSchema = z.object({
+  left: joinKey, right: joinKey,
+  columns: z.record(idSchema, z.object({ side: z.enum(['left', 'right']), field: idSchema })),
 })
 const datasetSchema = z.object({
   id: idSchema, label: z.string().trim().min(1).max(100), grain: z.enum(['district', 'person']).default('district'),
-  fields: z.array(fieldSchema).min(1).max(50), publicDetail: z.boolean().optional(),
+  fields: z.array(fieldSchema).min(1).max(50), publicDetail: z.boolean().optional(), join: joinSchema.optional(),
 })
 const widgetType = z.enum(['progress', 'kpi', 'bars', 'donut', 'table', 'link', 'schedule'])
 export const widgetWidths = ['quarter', 'third', 'half', 'two-thirds', 'full'] as const
@@ -45,6 +53,26 @@ export const definitionSchema = z.object({
   if (new Set(definition.widgets.map(widget => widget.id)).size !== definition.widgets.length) issue('ID komponen harus unik.')
   for (const dataset of definition.datasets) {
     if (new Set(dataset.fields.map(field => field.id)).size !== dataset.fields.length) issue(`ID kolom pada ${dataset.label} harus unik.`)
+    const fields = activeFields(dataset)
+    if (!fields.length) issue(`Gunakan setidaknya satu kolom pada ${dataset.label}.`)
+    if (!dataset.join) continue
+    const { left, right, columns } = dataset.join
+    const leftSource = datasets.get(left.dataset), rightSource = datasets.get(right.dataset)
+    const leftField = leftSource && activeFields(leftSource).find(field => field.id === left.field)
+    const rightField = rightSource && activeFields(rightSource).find(field => field.id === right.field)
+    if (!leftSource || !rightSource || left.dataset === right.dataset || leftSource.join || rightSource.join || dataset.grain !== leftSource.grain ||
+      left.field !== joinIdentity && !leftField || right.field !== joinIdentity && !rightField) {
+      issue(`Pilih dua sumber dan kolom kunci yang aktif untuk ${dataset.label}.`)
+      continue
+    }
+    for (const field of fields) {
+      const column = columns[field.id]
+      const source = column && (column.side === 'left' ? leftSource : rightSource)
+      const input = source && activeFields(source).find(item => item.id === column.field)
+      if (!input || !field.derived || field.formula || input.unit !== field.unit || input.scale !== field.scale || field.public && !input.public) {
+        issue(`Kolom ${field.label} di ${dataset.label} harus terhubung ke kolom sumber yang aktif dan sesuai satuan serta aksesnya.`)
+      }
+    }
   }
   for (const widget of definition.widgets) {
     if (widget.type === 'link') {
@@ -54,7 +82,7 @@ export const definitionSchema = z.object({
     if (widget.type === 'schedule') continue
     const dataset = widget.dataset && datasets.get(widget.dataset)
     if (!dataset) { issue(`Pilih dataset untuk ${widget.title}.`); continue }
-    const fields = new Map(dataset.fields.map(field => [field.id, field]))
+    const fields = new Map(activeFields(dataset).map(field => [field.id, field]))
     const ids = [widget.field, widget.target, ...(widget.fields ?? [])].filter(Boolean) as string[]
     if (!ids.length || ids.some(id => !fields.get(id)?.public)) issue(`Pilih kolom publik yang tersedia untuk ${widget.title}.`)
     if (['progress', 'kpi', 'bars'].includes(widget.type) && !widget.field) issue(`Pilih indikator utama untuk ${widget.title}.`)
@@ -84,6 +112,7 @@ export const definitionSchema = z.object({
 export type Definition = z.infer<typeof definitionSchema>
 export type Dataset = z.infer<typeof datasetSchema>
 export type Field = z.infer<typeof fieldSchema>
+export type DatasetJoin = z.infer<typeof joinSchema>
 export type Widget = z.infer<typeof widgetSchema>
 export type Rule = z.infer<typeof ruleSchema>
 export type Visibility = z.infer<typeof visibilitySchema>

@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Check, Plus, Redo2, Save, Trash2, Undo2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { dashboardThemes, widgetWidths, type Definition, type Field, type Rule, type Widget } from '../../../packages/contracts/index'
+import { activeFields, dashboardThemes, widgetWidths, type Definition, type Field, type Rule, type Widget } from '../../../packages/contracts/index'
 import { donutCategoryLimit, groupedBarLimit, singleBarLimit } from '../../../packages/contracts/visualization'
 import { widgetLabels } from '../../../packages/widgets/index'
 import { api, fmt, type DashboardDetail } from './api'
@@ -89,7 +89,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
   const setWidget = (id: string, next: Widget) => change({ ...draft, widgets: draft.widgets.map(widget => widget.id === id ? next : widget) })
   function addWidget(type: Widget['type']) {
     const dataset = draft.datasets[0]
-    const fields = dataset.fields.filter(field => field.public && field.unit !== 'category')
+    const fields = activeFields(dataset).filter(field => field.public && field.unit !== 'category')
     const width: Widget['width'] = type === 'table' ? 'full' : type === 'progress' || type === 'kpi' ? 'third' : 'half'
     const base = { id: identity('widget'), title: widgetLabels[type], type, version: 1 as const, width }
     if (type === 'link' || type === 'schedule') { change({ ...draft, widgets: [...draft.widgets, base] }); return }
@@ -134,7 +134,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
         setQuery({ tab: 'editor', section: 'fields', source: event.target.value }, { replace: true })
       }}>{draft.datasets.map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>}
       {detail.template === 'custom' && <label>Nama sumber<input value={dataset.label} maxLength={100} onChange={event => change({ ...draft, datasets: draft.datasets.map(item => item.id === dataset.id ? { ...item, label: event.target.value } : item) })} /></label>}
-      {detail.template === 'custom' && <label>Satu baris mewakili<select value={dataset.grain} onChange={event => {
+      {detail.template === 'custom' && !dataset.join && <label>Satu baris mewakili<select value={dataset.grain} onChange={event => {
         const grain = event.target.value as typeof dataset.grain
         change({
           ...draft,
@@ -143,10 +143,10 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
         })
       }}><option value="district">Kabupaten atau kota</option><option value="person">Satu orang</option></select></label>}
       <div className="editor-fields-heading"><h3>Kolom {dataset.label} <small>{dataset.fields.length}/50</small></h3>
-        <button className="button" disabled={dataset.fields.length >= 50} onClick={addField}><Plus size={16} /> Tambah kolom</button>
+        {!dataset.join && <button className="button" disabled={dataset.fields.length >= 50} onClick={addField}><Plus size={16} /> Tambah kolom</button>}
       </div>
       {detail.template === 'pes' && dataset.id === 'sls' && <label className="check"><input type="checkbox" checked={dataset.publicDetail ?? false} onChange={event => change({ ...draft, datasets: draft.datasets.map(item => item.id === dataset.id ? { ...item, publicDetail: event.target.checked } : item) })} /> Izinkan pembaca membuka rincian kecamatan, desa, dan SLS</label>}
-      {dataset.fields.map(field => <FieldEditor key={`${dataset.id}:${field.id}`} field={field} dashboard={detail.id} dataset={dataset.id} focus={newField === field.id} removable={dataset.fields.length > 1} fixed={field.derived || detail.template !== 'custom' && !field.id.startsWith('field_')} onChange={next => updateFields(dataset.fields.map(value => value.id === field.id ? next : value))} onRemove={() => {
+      {dataset.fields.map(field => <FieldEditor key={`${dataset.id}:${field.id}`} field={field} dashboard={detail.id} dataset={dataset.id} focus={newField === field.id} removable={dataset.fields.length > 1} configurable={detail.template === 'custom'} fixed={field.derived || detail.template !== 'custom' && !field.id.startsWith('field_')} onChange={next => updateFields(dataset.fields.map(value => value.id === field.id ? next : value))} onRemove={() => {
         const used = draft.widgets.some(widget => widget.dataset === dataset.id && [widget.field, widget.target, widget.progressGroup?.field, widget.progressGroup?.target, ...(widget.fields ?? []), ...Object.keys(widget.provinceFooter?.rules ?? {}), ...Object.values(widget.provinceFooter?.rules ?? {}).flatMap(rule => [rule.numerator, rule.denominator])].includes(field.id)) || dataset.fields.some(item => item.formula?.toLowerCase().match(/[a-z][a-z0-9_]*/g)?.includes(field.id))
         if (used) { setError('Lepaskan kolom ini dari komponen atau rumus sebelum menghapusnya.'); return }
         updateFields(dataset.fields.filter(value => value.id !== field.id))
@@ -167,7 +167,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
   </div>
 }
 
-function FieldEditor({ field, dashboard, dataset, fixed, focus, removable, onChange, onRemove }: { field: Field; dashboard: string; dataset: string; fixed?: boolean; focus: boolean; removable: boolean; onChange: (field: Field) => void; onRemove: () => void }) {
+function FieldEditor({ field, dashboard, dataset, fixed, configurable, focus, removable, onChange, onRemove }: { field: Field; dashboard: string; dataset: string; fixed?: boolean; configurable: boolean; focus: boolean; removable: boolean; onChange: (field: Field) => void; onRemove: () => void }) {
   const [preview, setPreview] = useState<{ dependencies: { id: string; label: string }[]; rows: { name: string; value: number | null; reason?: string }[] }>()
   const [error, setError] = useState('')
   const nameInput = useRef<HTMLInputElement>(null)
@@ -178,14 +178,15 @@ function FieldEditor({ field, dashboard, dataset, fixed, focus, removable, onCha
     catch (error) { setError((error as Error).message) }
   }
   return <details className="editor-item editor-field" open={focus || undefined}>
-    <summary>{field.label} <small>{units[field.unit]}</small></summary>
+    <summary>{field.label} <small>{field.enabled === false ? 'Tidak dipakai' : units[field.unit]}</small></summary>
     <div className="editor-item-body form-stack">
     <div className="field-editor-heading"><code title="ID untuk rumus">{field.id}</code>{!fixed && removable && <button className="icon-button danger-text" aria-label={`Hapus ${field.label}`} onClick={onRemove}><Trash2 size={16} /></button>}</div>
     <label>Nama kolom<input ref={nameInput} value={field.label} maxLength={100} onChange={event => onChange({ ...field, label: event.target.value })} /></label>
     <label>Satuan<select value={field.unit} disabled={fixed} onChange={event => onChange({ ...field, unit: event.target.value as Field['unit'] })}>{Object.entries(units).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
     {field.unit === 'percent' && <label>Skala angka sumber<select value={field.scale ?? 'percentage'} disabled={fixed} onChange={event => onChange({ ...field, scale: event.target.value as Field['scale'] })}><option value="percentage">Persen (0–100)</option><option value="fraction">Pecahan (0–1)</option></select></label>}
     {!field.derived && <label>Alias judul sumber (pisahkan dengan |)<input key={field.aliases.join(' | ')} defaultValue={field.aliases.join(' | ')} onBlur={event => { const aliases = event.target.value.split('|').map(alias => alias.trim()).filter(Boolean); if (JSON.stringify(aliases) !== JSON.stringify(field.aliases)) onChange({ ...field, aliases }) }} /></label>}
-    <label className="check"><input type="checkbox" checked={field.public} onChange={event => onChange({ ...field, public: event.target.checked })} /> Boleh ditampilkan kepada pembaca</label>
+    {configurable && <label className="check"><input type="checkbox" checked={field.enabled !== false} onChange={event => onChange({ ...field, enabled: event.target.checked ? undefined : false })} /> Gunakan kolom</label>}
+    <label className="check"><input type="checkbox" checked={field.public} disabled={field.enabled === false} onChange={event => onChange({ ...field, public: event.target.checked })} /> Boleh ditampilkan kepada pembaca</label>
     {!field.derived && field.unit !== 'category' && <div className="form-stack"><label>Hitung dengan rumus (opsional)<input value={field.formula ?? ''} maxLength={256} onChange={event => { setError(''); setPreview(undefined); onChange({ ...field, formula: event.target.value || undefined }) }} placeholder="contoh: target * 2 + selesai" /></label>
       {field.formula && <button className="button subtle" onClick={check}>Periksa rumus</button>}{error && <Alert>{error}</Alert>}{preview && <div className="formula-preview"><p>Kolom terkait {preview.dependencies.map(item => `[${item.label}]`).join(', ') || '—'}</p>{preview.rows.map(row => <p key={row.name}>{row.name} <b>{row.value == null ? '—' : fmt.format(row.value)}</b> {row.reason}</p>)}{!preview.rows.length && <p>Unggah data untuk melihat contoh hasil.</p>}</div>}
     </div>}
@@ -197,7 +198,7 @@ function WidgetEditor({ widget, definition, rows, onChange }: { widget: Widget; 
   const [pendingGroup, setPendingGroup] = useState<string>()
   const dataWidget = widget.type !== 'schedule' && widget.type !== 'link'
   const dataset = definition.datasets.find(item => item.id === widget.dataset)
-  const available = dataset?.fields.filter(field => field.public && (widget.type === 'table' || field.unit !== 'category')) ?? []
+  const available = dataset ? activeFields(dataset).filter(field => field.public && (widget.type === 'table' || field.unit !== 'category')) : []
   const choice = available.map(field => <option value={field.id} key={field.id}>{field.label}</option>)
   const multiple = widget.type === 'table' || widget.type === 'donut'
   const group = widget.progressGroup
