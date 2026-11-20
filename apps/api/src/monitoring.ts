@@ -1,17 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import { hash as passwordHash, verify, Algorithm } from '@node-rs/argon2'
 import { z } from 'zod'
-import { dateSchema, definitionSchema, timeSchema, type CollectionReport, type Condition, type Definition, type Notice, type Report, type SnapshotData, type TemplateId, type UploadMapping, type Visibility } from '../../../packages/contracts/index'
+import { dateSchema, definitionSchema, timeSchema, type CollectionReport, type Condition, type Dataset, type Definition, type Notice, type Report, type SnapshotData, type TemplateId, type UploadMapping, type Visibility } from '../../../packages/contracts/index'
+import type { CsvAnalysisStage } from '../../../packages/contracts/csv-analysis'
+import type { MemberRole, SuperadminPolicy } from '../../../packages/contracts/accounts'
 import { aggregate, applyFormulas, previousDay } from '../../../packages/metrics/index'
 import { compileFormulas, evaluate, parseFormula } from '../../../packages/metrics/formula'
 import { ImportError, normalizeUpload, type InputFile } from '../../../packages/adapters/index'
 import { templateDefinition, templates } from '../../../templates/index'
 import { exampleDates, exampleFiles } from '../../../fixtures/synthetic/index'
-import { account, audit, datasetSignature, fail, hash, now, token, type AccessSession, type Dashboard, type Grant, type ImportJob, type Proof, type Release, type Session, type Snapshot, type User } from './model'
+import { account, audit, datasetSignature, fail, hash, now, permissions, superadminPolicy, superadminPolicyKey, token, type AccessSession, type Dashboard, type Grant, type ImportJob, type Proof, type Release, type Session, type Snapshot, type User } from './model'
 import type { Records, Store } from './store'
 import { openObjects, type Objects } from './objects'
 import { JobQueue } from './queues'
-import { geminiAvailable, suggestCsv } from './gemini'
+import { cachedGeminiStatus, checkGeminiStatus, geminiAvailable, suggestCsv } from './gemini'
 
 export type Credentials = { session?: string; shared?: string }
 const duration = 8 * 60 * 60 * 1000
@@ -20,9 +22,14 @@ const releaseKey = (d: Dashboard, id: string) => `release:${d.id}:${id}`
 const snapshotKey = (d: Dashboard, id: string) => `snapshot:${d.id}:${id}`
 const importObject = (job: string, slot: string) => `imports/${job}/${slot}`
 const requireDashboard = (db: Records, id: string) => db.get<Dashboard>(`dashboard:${id}`) ?? fail(404, 'NOT_FOUND', 'Dashboard tidak ditemukan.')
-const isAdmin = (user: User, dashboard: Dashboard) => user.tenant === dashboard.tenant && user.role === 'admin'
-const canManage = (user: User, dashboard: Dashboard) => isAdmin(user, dashboard) || (user.role !== 'reader' && user.tenant === dashboard.tenant && user.id === dashboard.owner)
-const canEdit = (user: User, dashboard: Dashboard) => canManage(user, dashboard) || (user.tenant === dashboard.tenant && user.role === 'operator' && dashboard.operators.includes(user.id))
+const canManage = (db: Records, user: User, dashboard: Dashboard) => user.tenant === dashboard.tenant && permissions(db, user).dashboards
+const canEdit = (db: Records, user: User, dashboard: Dashboard) => canManage(db, user, dashboard) || (user.tenant === dashboard.tenant && user.role === 'operator' && dashboard.operators.includes(user.id))
+const sessionKey = (session: string) => 'session:' + hash(session)
+const userKey = (id: string) => 'user:' + id
+const hasPersonalRows = (definition: Definition) => definition.datasets.some(dataset => dataset.grain === 'person')
+function checkPersonalAccess(definition: Definition, visibility: Visibility) {
+  if (hasPersonalRows(definition) && visibility !== 'invite') fail(422, 'PERSONAL_DATA_REQUIRES_INVITES', 'Dashboard yang memuat progres per orang hanya dapat diterbitkan untuk akun yang diundang.')
+}
 const assertOpen = (dashboard: Dashboard) => { if (dashboard.activityStatus === 'closed') fail(409, 'ACTIVITY_CLOSED', 'Kegiatan sudah selesai. Hubungi admin untuk membuka kembali.') }
 const putDashboard = (db: Records, dashboard: Dashboard) => db.put(`dashboard:${dashboard.id}`, dashboard)
 function checkRevision(actual: number, expected: number) {
@@ -45,10 +52,14 @@ function addRelease(db: Records, dashboard: Dashboard, definition: Definition, s
   dashboard.releaseIds.push(release.id)
   return release
 }
+const sameGrain = (snapshot: Snapshot, dataset: Dataset) => (snapshot.grains?.[dataset.id] ?? 'district') === dataset.grain
+function reusableInputs(dashboard: Dashboard, snapshot: Snapshot, job: ImportJob) {
+  return Object.fromEntries(dashboard.draft.datasets.filter(dataset => sameGrain(snapshot, dataset) && Object.hasOwn(job.files, dataset.id)).map(dataset => [dataset.id, job.files[dataset.id]]))
+}
 function snapshotData(definition: Definition, snapshot: Snapshot, publicOnly: boolean): SnapshotData {
   return Object.fromEntries(definition.datasets.flatMap(dataset => {
     const source = snapshot.data[dataset.id]
-    if (!source) return []
+    if (!source || !sameGrain(snapshot, dataset)) return []
     const normalized = applyFormulas(dataset, source)
     const project = (values: Record<string, string | number | null>) => Object.fromEntries(dataset.fields.filter(field => !publicOnly || field.public).map(field => [field.id, values[field.id] ?? null]))
     const projectRow = ({ source, ...row }: (typeof normalized.rows)[number]) => ({ ...row, ...(!publicOnly ? { source } : {}), values: project(row.values) })
@@ -79,6 +90,7 @@ export class Monitoring {
       const users: User[] = [{ id: 'admin', tenant: 'sumbar', role: 'admin', name: 'Admin Sumatera Barat', email: process.env.ADMIN_EMAIL || 'admin@example.test', hash: await passwordHash(password, { algorithm: Algorithm.Argon2id }) }]
       if (!production && !process.env.ADMIN_PASSWORD) {
         for (const role of ['operator', 'reader'] as const) users.push({ id: role, tenant: 'sumbar', role, name: role === 'operator' ? 'Operator Data' : 'Pembaca Undangan', email: `${role}@example.test`, hash: users[0].hash })
+        if (process.env.NODE_ENV === 'test') users.push({ id: 'developer', tenant: 'sumbar', role: 'developer', name: 'Developer Pengujian', email: 'developer@example.test', hash: users[0].hash })
       }
       await this.store.write(db => {
         if (!db.list<User>('user:').length) for (const user of users) db.put(`user:${user.id}`, user)
@@ -108,11 +120,13 @@ export class Monitoring {
 
   user(db: Records, credentials: Credentials) {
     if (!credentials.session || !/^[\w-]{43}$/.test(credentials.session)) return undefined
-    const session = db.get<Session>('session:' + hash(credentials.session))
-    return session && session.expires > Date.now() ? db.get<User>('user:' + session.userId) : undefined
+    const session = db.get<Session>(sessionKey(credentials.session))
+    if (!session || session.expires <= Date.now()) return
+    const user = db.get<User>(userKey(session.userId))
+    return user && (user.passwordVersion ?? 0) === (session.passwordVersion ?? 0) ? user : undefined
   }
   requireUser(db: Records, credentials: Credentials) { return this.user(db, credentials) ?? fail(401, 'LOGIN_REQUIRED', 'Masuk untuk melanjutkan.') }
-  async me(credentials: Credentials) { return this.store.read(db => { const user = this.user(db, credentials); return user ? account(user) : null }) }
+  async me(credentials: Credentials) { return this.store.read(db => { const user = this.user(db, credentials); return user ? account(db, user) : null }) }
 
   private rate(key: string) {
     const timestamp = Date.now()
@@ -131,11 +145,98 @@ export class Monitoring {
     if (!user || !valid) fail(401, 'LOGIN_FAILED', 'Email atau kata sandi tidak sesuai.')
     this.attempts.delete(`email:${email}`)
     const session = token()
-    await this.store.write(db => db.put<Session>('session:' + hash(session), { userId: user.id, expires: Date.now() + duration }))
-    return { session, user: account(user) }
+    return this.store.write(db => {
+      const current = db.get<User>(userKey(user.id))
+      if (!current || current.hash !== user.hash) fail(401, 'LOGIN_FAILED', 'Email atau kata sandi tidak sesuai.')
+      db.put<Session>(sessionKey(session), { userId: user.id, expires: Date.now() + duration, passwordVersion: current.passwordVersion })
+      return { session, user: account(db, current) }
+    })
   }
   async logout(credentials: Credentials) {
-    if (credentials.session) await this.store.write(db => db.delete('session:' + hash(credentials.session!)))
+    if (credentials.session) await this.store.write(db => db.delete(sessionKey(credentials.session!)))
+  }
+
+  async updateProfile(credentials: Credentials, input: { name: string; avatar: number | null }) {
+    return this.store.write(db => {
+      const user = this.requireUser(db, credentials)
+      const next = { ...user, name: input.name, avatar: input.avatar ?? undefined }
+      db.put(userKey(user.id), next)
+      return account(db, next)
+    })
+  }
+  async changePassword(credentials: Credentials, currentPassword: string, nextPassword: string, ip: string) {
+    const user = await this.store.read(db => this.requireUser(db, credentials))
+    const rateKey = `password:${user.id}:${ip}`
+    this.rate(rateKey)
+    if (!await verify(user.hash, currentPassword)) fail(401, 'PASSWORD_INCORRECT', 'Kata sandi saat ini tidak sesuai.')
+    if (currentPassword === nextPassword) fail(422, 'PASSWORD_UNCHANGED', 'Gunakan kata sandi baru yang berbeda.')
+    const nextHash = await passwordHash(nextPassword, { algorithm: Algorithm.Argon2id })
+    await this.store.write(db => {
+      const current = this.requireUser(db, credentials)
+      if (current.hash !== user.hash) fail(409, 'PASSWORD_CHANGED', 'Kata sandi baru saja berubah. Ulangi dengan kata sandi saat ini.')
+      const key = sessionKey(credentials.session!)
+      const session = db.get<Session>(key)!
+      const passwordVersion = (current.passwordVersion ?? 0) + 1
+      db.put(userKey(current.id), { ...current, hash: nextHash, passwordVersion })
+      db.put(key, { ...session, passwordVersion })
+      db.put('audit:' + token(), { user: user.id, tenant: user.tenant, action: 'password_changed', at: now() })
+    })
+    this.attempts.delete(rateKey)
+    return { ok: true }
+  }
+  async members(credentials: Credentials) {
+    return this.store.read(db => {
+      const user = this.requireUser(db, credentials)
+      const access = permissions(db, user)
+      if (!access.users) fail(403, 'FORBIDDEN', 'Anda tidak punya izin mengelola pengguna.')
+      return {
+        members: db.list<User>('user:').filter(item => item.tenant === user.tenant && (access.roles || item.role === 'operator' || item.role === 'reader')).map(item => account(db, item)),
+        policy: access.roles ? superadminPolicy(db, user.tenant) : undefined,
+      }
+    })
+  }
+  async createMember(credentials: Credentials, input: { name: string; email: string; role: MemberRole; password: string }) {
+    const authorized = (db: Records) => {
+      const user = this.requireUser(db, credentials)
+      const access = permissions(db, user)
+      if (!access.users || (!access.roles && input.role !== 'operator' && input.role !== 'reader')) fail(403, 'FORBIDDEN', 'Anda tidak punya izin menambahkan pengguna dengan role ini.')
+      return user
+    }
+    await this.store.read(authorized)
+    const hash = await passwordHash(input.password, { algorithm: Algorithm.Argon2id })
+    return this.store.write(db => {
+      const creator = authorized(db)
+      if (db.list<User>('user:').some(user => user.email.toLowerCase() === input.email)) fail(409, 'EMAIL_EXISTS', 'Email tersebut sudah terdaftar.')
+      const member: User = { id: randomUUID(), tenant: creator.tenant, email: input.email, name: input.name, role: input.role, hash }
+      db.put(userKey(member.id), member)
+      db.put('audit:' + token(), { user: creator.id, tenant: creator.tenant, action: 'member_created', memberId: member.id, role: member.role, at: now() })
+      return account(db, member)
+    })
+  }
+  async changeRole(credentials: Credentials, id: string, role: MemberRole, expectedRole: MemberRole) {
+    return this.store.write(db => {
+      const user = this.requireUser(db, credentials)
+      if (!permissions(db, user).roles) fail(403, 'FORBIDDEN', 'Hanya developer yang dapat mengubah role pengguna.')
+      const member = db.get<User>(userKey(id))
+      if (!member || member.tenant !== user.tenant) fail(404, 'NOT_FOUND', 'Pengguna tidak ditemukan.')
+      if (member.role === 'developer') fail(403, 'FORBIDDEN', 'Role developer dikelola melalui server.')
+      if (member.role !== expectedRole) fail(409, 'ROLE_CHANGED', 'Role sudah berubah. Muat ulang daftar pengguna.')
+      const next = { ...member, role }
+      db.put(userKey(id), next)
+      db.put('audit:' + token(), { user: user.id, tenant: user.tenant, action: 'role_changed', memberId: id, before: member.role, role, at: now() })
+      return account(db, next)
+    })
+  }
+  async updateSuperadminPolicy(credentials: Credentials, policy: SuperadminPolicy, expected: SuperadminPolicy) {
+    return this.store.write(db => {
+      const user = this.requireUser(db, credentials)
+      if (!permissions(db, user).roles) fail(403, 'FORBIDDEN', 'Hanya developer yang dapat mengubah izin superadmin.')
+      const current = superadminPolicy(db, user.tenant)
+      if (current.dashboards !== expected.dashboards || current.users !== expected.users) fail(409, 'POLICY_CHANGED', 'Izin sudah berubah. Muat ulang pengaturan role.')
+      db.put(superadminPolicyKey(user.tenant), policy)
+      db.put('audit:' + token(), { user: user.id, tenant: user.tenant, action: 'superadmin_policy_changed', before: current, policy, at: now() })
+      return policy
+    })
   }
 
   private newDashboard(template: TemplateId, tenant: string, owner: string, demo = false, title?: string): Dashboard {
@@ -150,7 +251,8 @@ export class Monitoring {
     }
   }
   private addSnapshot(db: Records, dashboard: Dashboard, condition: Condition, data: SnapshotData, fileHash: string, demo: boolean, collection?: CollectionReport[]) {
-    const snapshot: Snapshot = { id: randomUUID(), ...condition, data, collection, hash: fileHash, demo, createdAt: now(), revision: ++dashboard.activityRevision, signature: datasetSignature(dashboard.draft) }
+    const grains = Object.fromEntries(dashboard.draft.datasets.map(dataset => [dataset.id, dataset.grain]))
+    const snapshot: Snapshot = { id: randomUUID(), ...condition, data, collection, hash: fileHash, demo, createdAt: now(), revision: ++dashboard.activityRevision, signature: datasetSignature(dashboard.draft), grains }
     db.put(snapshotKey(dashboard, snapshot.id), snapshot)
     dashboard.snapshotIds.push(snapshot.id)
     return snapshot
@@ -160,7 +262,7 @@ export class Monitoring {
     if (dashboard.activeRelease && dashboard.visibility === 'public') return true
     if (!dashboard.activeRelease) return false
     const user = this.user(db, credentials)
-    if (user && canEdit(user, dashboard)) return true
+    if (user && canEdit(db, user, dashboard)) return true
     const active = (grant: Grant) => !grant.expires || grant.expires > Date.now()
     if (dashboard.visibility === 'invite') return !!user && dashboard.grants.some(grant => grant.mode === 'invite' && grant.email === user.email.toLowerCase() && active(grant))
     if (!credentials.shared || !/^[\w-]{43}$/.test(credentials.shared)) return false
@@ -181,7 +283,9 @@ export class Monitoring {
     if (!snapshot) fail(404, 'DATA_EMPTY', 'Belum ada data kondisi yang bisa ditampilkan.')
     const definition = release?.definition ?? dashboard.draft
     const previous = previousDay(snapshot.date)
-    const history = dashboard.releaseIds.map(id => db.get<Release>(releaseKey(dashboard, id))!).sort((a, b) => byCondition(b, a) || b.version - a.version)
+    const history = dashboard.releaseIds.map(id => db.get<Release>(releaseKey(dashboard, id))!)
+      .filter(item => dashboard.visibility === 'invite' || !hasPersonalRows(item.definition))
+      .sort((a, b) => byCondition(b, a) || b.version - a.version)
     let baseline: Snapshot | undefined
     if (release) {
       const entry = history.find(item => item.date === previous)
@@ -204,26 +308,26 @@ export class Monitoring {
       if (!dashboard || !this.authorize(db, credentials, dashboard)) fail(404, 'NOT_FOUND', 'Dashboard tidak ditemukan atau akses diperlukan.')
       if (selected && !dashboard.releaseIds.includes(selected)) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
       const release = db.get<Release>(releaseKey(dashboard, selected || dashboard.activeRelease!))
-      if (!release) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
+      if (!release || (dashboard.visibility !== 'invite' && hasPersonalRows(release.definition))) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
       return this.report(db, dashboard, release)
     })
   }
   async studio(credentials: Credentials) {
     return this.store.read(db => {
       const user = this.requireUser(db, credentials)
-      return db.list<Dashboard>('dashboard:').filter(dashboard => !dashboard.demo && canEdit(user, dashboard)).map(({ id, slug, draft, template, activityStatus, visibility, activeRelease, archivedAt }) => ({ id, slug, title: draft.title, template, activityStatus, visibility, activeRelease, archivedAt }))
+      return db.list<Dashboard>('dashboard:').filter(dashboard => !dashboard.demo && canEdit(db, user, dashboard)).map(({ id, slug, draft, template, activityStatus, visibility, activeRelease, archivedAt }) => ({ id, slug, title: draft.title, template, activityStatus, visibility, activeRelease, archivedAt }))
     })
   }
   private protect(db: Records, credentials: Credentials, id: string, manage = false) {
     const user = this.requireUser(db, credentials)
     const dashboard = requireDashboard(db, id)
-    if (dashboard.demo || !(manage ? canManage(user, dashboard) : canEdit(user, dashboard))) fail(403, 'FORBIDDEN', 'Anda tidak punya izin untuk dashboard ini.')
+    if (dashboard.demo || !(manage ? canManage(db, user, dashboard) : canEdit(db, user, dashboard))) fail(403, 'FORBIDDEN', 'Anda tidak punya izin untuk dashboard ini.')
     return { user, dashboard }
   }
   async create(credentials: Credentials, template: TemplateId, title?: string) {
     return this.store.write(db => {
       const user = this.requireUser(db, credentials)
-      if (user.role !== 'admin') fail(403, 'FORBIDDEN', 'Admin satker dapat membuat dashboard.')
+      if (!permissions(db, user).dashboards) fail(403, 'FORBIDDEN', 'Anda tidak punya izin membuat dashboard.')
       const dashboard = this.newDashboard(template, user.tenant, user.id, false, title)
       if (template !== 'custom') for (const day of [0, 1] as const) {
         const { data, collection } = normalizeUpload(template, dashboard.draft.datasets, exampleFiles(template, day))
@@ -237,13 +341,20 @@ export class Monitoring {
   async detail(credentials: Credentials, id: string) {
     return this.store.read(db => {
       const { user, dashboard } = this.protect(db, credentials, id)
-      const jobs = db.list<ImportJob>('import:').filter(job => job.dashboardId === id && (canManage(user, dashboard) || job.owner === user.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      const manage = canManage(db, user, dashboard)
+      const dashboardJobs = db.list<ImportJob>('import:').filter(job => job.dashboardId === id)
+      const jobs = dashboardJobs.filter(job => manage || job.owner === user.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      const snapshot = dashboard.template === 'custom' ? latestSnapshot(db, dashboard) : undefined
+      const applied = snapshot && dashboardJobs.find(job => job.status === 'published' && job.snapshotId === snapshot.id)
+      const active = dashboard.activeRelease ? db.get<Release>(releaseKey(dashboard, dashboard.activeRelease)) : undefined
       const { grants, operators, ...detail } = dashboard
       return {
-        ...detail, canManage: canManage(user, dashboard), canClose: isAdmin(user, dashboard), aiAvailable: geminiAvailable(),
-        grants: canManage(user, dashboard) ? grants.map(({ hash: _hash, ...grant }) => grant) : [],
-        operators: canManage(user, dashboard) ? db.list<User>('user:').filter(member => member.role === 'operator' && member.tenant === dashboard.tenant).map(member => ({ id: member.id, name: member.name, email: member.email, assigned: operators.includes(member.id) })) : [],
-        jobs: jobs.map(({ data: _data, hash: _hash, mappings: _mappings, ...job }) => job),
+        ...detail, canManage: manage, canClose: manage, aiAvailable: geminiAvailable(), aiHealth: cachedGeminiStatus(),
+        grants: manage ? grants.map(({ hash: _hash, ...grant }) => grant) : [],
+        operators: manage ? db.list<User>('user:').filter(member => member.role === 'operator' && member.tenant === dashboard.tenant).map(member => ({ id: member.id, name: member.name, email: member.email, assigned: operators.includes(member.id) })) : [],
+        jobs: jobs.map(({ data: _data, hash: _hash, mappings: _mappings, reusedFiles: _reusedFiles, baseSnapshotId: _baseSnapshotId, ...job }) => job),
+        activePersonal: active ? hasPersonalRows(active.definition) : false,
+        savedInputs: snapshot && applied && { snapshotId: applied.snapshotId, date: applied.date, time: applied.time, files: reusableInputs(dashboard, snapshot, applied) },
         preview: dashboard.snapshotIds.length ? this.report(db, dashboard) : null,
       }
     })
@@ -256,11 +367,16 @@ export class Monitoring {
       const original = templateDefinition(dashboard.template)
       if (dashboard.template !== 'custom' && (definition.datasets.length !== original.datasets.length || original.datasets.some(dataset => {
         const next = definition.datasets.find(item => item.id === dataset.id)
-        return !next || dataset.fields.some(field => !next.fields.some(item => item.id === field.id && item.unit === field.unit && item.scale === field.scale && item.derived === field.derived))
+        return !next || next.grain !== dataset.grain || dataset.fields.some(field => !next.fields.some(item => item.id === field.id && item.unit === field.unit && item.scale === field.scale && item.derived === field.derived))
       }))) fail(422, 'REQUIRED_TEMPLATE_FIELDS', 'Kolom baku template diperlukan untuk membaca sumber kegiatan.')
       if (body.mappings && Object.keys(body.mappings).some(id => !definition.datasets.some(dataset => dataset.id === id))) {
         fail(422, 'INVALID_MAPPING', 'Pemetaan harus merujuk ke dataset pada draf.')
       }
+      dashboard.mappings = Object.fromEntries(Object.entries(dashboard.mappings).filter(([id]) => {
+        const before = dashboard.draft.datasets.find(dataset => dataset.id === id)
+        const after = definition.datasets.find(dataset => dataset.id === id)
+        return after && before?.grain === after.grain
+      }))
       dashboard.draft = definition
       if (body.mappings) dashboard.mappings = { ...dashboard.mappings, ...body.mappings }
       dashboard.draftRevision++
@@ -270,36 +386,63 @@ export class Monitoring {
     })
   }
 
-  async aiDraft(credentials: Credentials, id: string, file: InputFile, input: { slot: string; headerRow?: number; stopRow?: number }) {
-    const { user, dashboard } = await this.store.read(db => this.protect(db, credentials, id))
+  async aiDraft(credentials: Credentials, id: string, file: InputFile, input: { slot: string; headerRow?: number; stopRow?: number; identity?: string }, onProgress?: (stage: CsvAnalysisStage) => void) {
+    const { user, dashboard, snapshot, manage } = await this.store.read(db => {
+      const auth = this.protect(db, credentials, id)
+      return { ...auth, snapshot: latestSnapshot(db, auth.dashboard), manage: canManage(db, auth.user, auth.dashboard) }
+    })
     assertOpen(dashboard)
     const dataset = dashboard.draft.datasets.find(item => item.id === input.slot)
     if (!dataset) fail(422, 'AI_SLOT', 'Pilih dataset yang tersedia pada draf.')
-    const design = dashboard.template === 'custom' && dashboard.draft.datasets.length === 1 && !dashboard.snapshotIds.length && canManage(user, dashboard)
+    const design = dashboard.template === 'custom' && !snapshot?.data[dataset.id] && !dashboard.mappings[dataset.id]?.region && manage
     this.rate(`gemini:${user.id}`)
     try {
-      return await suggestCsv({ ...input, file, dataset, design, definition: dashboard.draft, template: dashboard.template, expectedRevision: dashboard.draftRevision })
+      return await suggestCsv({ ...input, file, dataset, design, definition: dashboard.draft, template: dashboard.template, expectedRevision: dashboard.draftRevision, onProgress })
     } catch (error) {
       if (error instanceof ImportError) fail(422, error.notice.code, error.message, error.notice.location)
       throw error
     }
   }
+  async aiStatus(credentials: Credentials, id: string) {
+    await this.store.read(db => this.protect(db, credentials, id))
+    return { status: await checkGeminiStatus() }
+  }
 
-  async prepare(credentials: Credentials, id: string, condition: Condition, files: Record<string, InputFile>, inputMappings: Record<string, UploadMapping> | undefined) {
-    const { user, dashboard } = await this.store.read(db => this.protect(db, credentials, id))
+  async prepare(credentials: Credentials, id: string, condition: Condition, files: Record<string, InputFile>, inputMappings: Record<string, UploadMapping> | undefined, reuseSnapshot?: string) {
+    const { user, dashboard, applied } = await this.store.read(db => {
+      const auth = this.protect(db, credentials, id)
+      if (!reuseSnapshot) return { ...auth, applied: undefined }
+      const snapshot = latestSnapshot(db, auth.dashboard)
+      if (auth.dashboard.template !== 'custom' || snapshot?.id !== reuseSnapshot || byCondition(condition, snapshot) !== 0) {
+        fail(409, 'SOURCE_CONDITION_CHANGED', 'Kondisi sumber tersimpan berubah. Muat ulang halaman dan periksa berkas untuk kondisi ini.')
+      }
+      const job = db.list<ImportJob>('import:').find(job => job.dashboardId === id && job.status === 'published' && job.snapshotId === snapshot.id)
+      if (!job) fail(409, 'SOURCE_CONDITION_CHANGED', 'Berkas untuk kondisi ini perlu diunggah kembali.')
+      return { ...auth, applied: { ...job, files: reusableInputs(auth.dashboard, snapshot, job) } }
+    })
     assertOpen(dashboard)
-    if (!Object.keys(files).length) fail(422, 'FILE_REQUIRED', 'Pilih berkas untuk setiap slot data.')
+    const slots = Object.keys(files)
+    if (!slots.length) fail(422, 'FILE_REQUIRED', 'Pilih setidaknya satu berkas untuk diunggah.')
+    const reused = applied ? await Promise.all(dashboard.draft.datasets.filter(({ id }) => !Object.hasOwn(files, id) && Object.hasOwn(applied.files, id)).map(async ({ id: slot, label }) => {
+      const objectJob = applied.reusedFiles?.[slot] ?? applied.id
+      try {
+        const bytes = await this.objects.get(importObject(objectJob, slot))
+        return { slot, objectJob, file: { name: applied.files[slot], bytes } }
+      } catch {
+        fail(503, 'SOURCE_UNAVAILABLE', `Berkas tersimpan untuk ${label} belum dapat dibaca. Pilih berkas kembali.`)
+      }
+    })) : []
+    const allFiles = { ...Object.fromEntries(reused.map(({ slot, file }) => [slot, file])), ...files }
     const mappings = inputMappings ?? dashboard.mappings
     const autoSlots = ['auto_1', 'auto_2', 'auto_3']
     const completeBatch = dashboard.template === 'pes' && autoSlots.every(slot => Object.hasOwn(files, slot))
-    const contents = Object.entries(files).map(([slot, file]) => [
+    const contents = Object.entries(allFiles).map(([slot, file]) => [
       completeBatch && autoSlots.includes(slot) ? 'auto' : slot,
       file.name.toLowerCase().split('.').at(-1),
       hash(file.bytes),
     ]).sort()
     const fileHash = hash(JSON.stringify([condition, contents, mappings, datasetSignature(dashboard.draft)]))
     const jobId = randomUUID()
-    const slots = Object.keys(files)
     const discard = () => Promise.allSettled(slots.map(slot => this.objects.remove(importObject(jobId, slot))))
     let result
     try {
@@ -308,7 +451,17 @@ export class Monitoring {
       result = await this.store.write(db => {
         const current = this.protect(db, credentials, id).dashboard
         assertOpen(current)
-        const previous = db.list<ImportJob>('import:').find(job => job.dashboardId === id && job.owner === user.id && job.hash === fileHash && (job.status === 'published' || (['ready', 'uploaded', 'validating'].includes(job.status) && job.activityRevision === current.activityRevision && job.draftRevision === current.draftRevision)))
+        if (reused.length && latestSnapshot(db, current)?.id !== reuseSnapshot) {
+          fail(409, 'SOURCE_CONDITION_CHANGED', 'Berkas untuk kondisi ini sudah berubah. Muat ulang dan buat pemeriksaan baru.')
+        }
+        const previous = db.list<ImportJob>('import:').find(job => {
+          if (job.dashboardId !== id || job.owner !== user.id || job.hash !== fileHash) return false
+          return job.status === 'published' || (
+            ['ready', 'uploaded', 'validating'].includes(job.status) &&
+            job.activityRevision === current.activityRevision && job.draftRevision === current.draftRevision &&
+            (!job.baseSnapshotId || job.baseSnapshotId === reuseSnapshot)
+          )
+        })
         if (previous) return this.importPreview(db, current, previous)
         const pending = db.list<ImportJob>('import:').filter(job => job.dashboardId === id && ['uploaded', 'validating'].includes(job.status))
         if (pending.length >= 5) fail(429, 'IMPORT_LIMIT', 'Terlalu banyak berkas menunggu. Coba kembali sebentar lagi.')
@@ -317,7 +470,8 @@ export class Monitoring {
         const job: ImportJob = {
           id: jobId, dashboardId: id, owner: user.id, ...condition, hash: fileHash, status: 'uploaded', warnings: [], errors: [],
           mappings, draftRevision: current.draftRevision, activityRevision: current.activityRevision, createdAt: now(),
-          files: Object.fromEntries(slots.map(slot => [slot, files[slot].name])),
+          files: Object.fromEntries(Object.entries(allFiles).map(([slot, file]) => [slot, file.name])),
+          ...(reused.length ? { reusedFiles: Object.fromEntries(reused.map(({ slot, objectJob }) => [slot, objectJob])), baseSnapshotId: reuseSnapshot } : {}),
         }
         db.put('import:' + job.id, job)
         audit(db, user.id, 'import_upload', current, { jobId: job.id })
@@ -361,7 +515,7 @@ export class Monitoring {
     let status: ImportJob['status'] = 'ready'
     const errors: Notice[] = []
     try {
-      const files = Object.fromEntries(await Promise.all(Object.entries(job.files).map(async ([slot, name]) => [slot, { name, bytes: await this.objects.get(importObject(job.id, slot)) }])))
+      const files = Object.fromEntries(await Promise.all(Object.entries(job.files).map(async ([slot, name]) => [slot, { name, bytes: await this.objects.get(importObject(job.reusedFiles?.[slot] ?? job.id, slot)) }])))
       ;({ data, warnings, collection, sources } = normalizeUpload(dashboard.template, dashboard.draft.datasets, files, job.mappings))
       for (const slot of sampleSlots(dashboard.template, data)) errors.push({ code: 'EXAMPLE_DATA', message: `Dataset ${slot} masih berisi berkas contoh yang disediakan. Ganti dengan data kegiatan untuk menerbitkannya.` })
     } catch (error) {
@@ -376,7 +530,7 @@ export class Monitoring {
       if (!saved || saved.claim !== claim) return
       const current = requireDashboard(db, job.dashboardId)
       const owner = db.get<User>('user:' + job.owner)
-      if (!owner || !canEdit(owner, current)) errors.push({ code: 'FORBIDDEN', message: 'Penugasan operator pada dashboard telah berubah.' })
+      if (!owner || !canEdit(db, owner, current)) errors.push({ code: 'FORBIDDEN', message: 'Izin pengelola pada dashboard telah berubah.' })
       else if (current.activityStatus === 'closed') errors.push({ code: 'ACTIVITY_CLOSED', message: 'Kegiatan ditutup sebelum pemeriksaan selesai.' })
       else if (current.activityRevision !== job.activityRevision || current.draftRevision !== job.draftRevision) errors.push({ code: 'REVISION_CONFLICT', message: 'Dashboard berubah. Buat pratinjau ulang untuk data ini.' })
       saved.status = status === 'failed' ? status : errors.length ? 'invalid' : 'ready'
@@ -401,13 +555,13 @@ export class Monitoring {
       const gone = from?.rows.filter(row => !data.rows.some(item => item.code === row.code)).map(row => row.name) ?? []
       return { id, source: job.sources?.[id] ?? job.files[id] ?? job.files.workbook, rows: data.rows.length, detailed: data.detail?.filter(row => row.level === 'sls').length, target, before, newCodes, gone, samples: data.rows.slice(0, 3), reported: data.reported }
     })
-    const { data: _data, collection, claim: _claim, lease: _lease, ...publicJob } = job
+    const { data: _data, collection, claim: _claim, lease: _lease, reusedFiles: _reusedFiles, baseSnapshotId: _baseSnapshotId, ...publicJob } = job
     return { ...publicJob, differences, collection: collection?.map(({ date, time, rows }) => ({ date, time, count: rows.length })) }
   }
   private getJob(db: Records, credentials: Credentials, id: string) {
     const job = db.get<ImportJob>('import:' + id) ?? fail(404, 'NOT_FOUND', 'Pekerjaan unggahan tidak ditemukan.')
     const { user, dashboard } = this.protect(db, credentials, job.dashboardId)
-    if (job.owner !== user.id && !canManage(user, dashboard)) fail(404, 'NOT_FOUND', 'Pekerjaan unggahan tidak ditemukan.')
+    if (job.owner !== user.id && !canManage(db, user, dashboard)) fail(404, 'NOT_FOUND', 'Pekerjaan unggahan tidak ditemukan.')
     return { job, user, dashboard }
   }
   async preview(credentials: Credentials, id: string) {
@@ -424,7 +578,7 @@ export class Monitoring {
     if (!await verify(user.hash, password)) fail(401, 'PASSWORD_INCORRECT', 'Kata sandi akun tidak sesuai.')
     this.attempts.delete(`confirm:${user.id}:${ip}`)
     const proof = token()
-    await this.store.write(db => db.put<Proof>('proof:' + hash(proof), { userId: user.id, jobId: id, dashboardId: job.dashboardId, hash: job.hash, expires: Date.now() + 180_000 }))
+    await this.store.write(db => db.put<Proof>('proof:' + hash(proof), { userId: user.id, jobId: id, dashboardId: job.dashboardId, hash: job.hash, expires: Date.now() + 180_000, passwordVersion: user.passwordVersion }))
     return { proof }
   }
   async commit(credentials: Credentials, id: string, body: { proof: string; hash: string; idempotencyKey: string; reason?: string }) {
@@ -435,9 +589,12 @@ export class Monitoring {
       if (job.status !== 'ready' || !job.data) fail(409, 'IMPORT_NOT_READY', 'Pekerjaan ini sudah diterapkan atau masih memerlukan koreksi.')
       checkRevision(dashboard.activityRevision, job.activityRevision)
       checkRevision(dashboard.draftRevision, job.draftRevision)
+      if (job.baseSnapshotId && latestSnapshot(db, dashboard)?.id !== job.baseSnapshotId) {
+        fail(409, 'SOURCE_CONDITION_CHANGED', 'Berkas untuk kondisi ini sudah berubah. Muat ulang dan buat pemeriksaan baru.')
+      }
       const proofKey = 'proof:' + hash(body.proof)
       const proof = db.get<Proof>(proofKey)
-      if (!proof || proof.expires <= Date.now() || proof.jobId !== id || proof.userId !== user.id || proof.dashboardId !== dashboard.id || proof.hash !== job.hash || job.hash !== body.hash) fail(403, 'CONFIRM_REQUIRED', 'Konfirmasi kata sandi untuk pratinjau ini perlu diulang.')
+      if (!proof || proof.expires <= Date.now() || proof.jobId !== id || proof.userId !== user.id || proof.dashboardId !== dashboard.id || proof.hash !== job.hash || job.hash !== body.hash || (proof.passwordVersion ?? 0) !== (user.passwordVersion ?? 0)) fail(403, 'CONFIRM_REQUIRED', 'Konfirmasi kata sandi untuk pratinjau ini perlu diulang.')
       if (job.warnings.length && !body.reason) fail(422, 'REASON_REQUIRED', 'Tulis alasan untuk menerapkan unggahan dengan peringatan.')
       const duplicate = dashboard.snapshotIds.map(snapshot => db.get<Snapshot>(snapshotKey(dashboard, snapshot))!).find(item => item.hash === job.hash)
       if (duplicate) fail(409, 'DUPLICATE_SNAPSHOT', 'Data dengan kondisi dan pemetaan yang sama sudah tersimpan.')
@@ -466,6 +623,7 @@ export class Monitoring {
     return this.store.write(db => {
       const { user, dashboard } = this.protect(db, credentials, id, true)
       checkRevision(dashboard.draftRevision, expected)
+      checkPersonalAccess(dashboard.draft, visibility)
       const snapshots = dashboard.snapshotIds.map(item => db.get<Snapshot>(snapshotKey(dashboard, item))!).filter(snapshot => !snapshot.demo)
         .filter(snapshot => snapshot.signature === datasetSignature(dashboard.draft)).sort((a, b) => byCondition(a, b) || a.revision - b.revision)
       if (!snapshots.length) fail(422, 'DATA_REQUIRED', 'Terapkan semua berkas kegiatan dengan definisi saat ini sebelum menerbitkan dashboard.')
@@ -487,6 +645,7 @@ export class Monitoring {
       const { user, dashboard } = this.protect(db, credentials, id, true)
       checkRevision(dashboard.draftRevision, expected)
       const previous = db.get<Release>(releaseKey(dashboard, releaseId)) ?? fail(404, 'NOT_FOUND', 'Rilis tidak ditemukan.')
+      checkPersonalAccess(previous.definition, dashboard.visibility)
       const snapshot = db.get<Snapshot>(snapshotKey(dashboard, previous.snapshotId))!
       const release = addRelease(db, dashboard, previous.definition, snapshot)
       dashboard.activeRelease = release.id
@@ -499,7 +658,7 @@ export class Monitoring {
   async changeStatus(credentials: Credentials, id: string, close: boolean, revision: number, reason?: string) {
     return this.store.write(db => {
       const { user, dashboard } = this.protect(db, credentials, id, true)
-      if (!isAdmin(user, dashboard)) fail(403, 'FORBIDDEN', 'Hanya admin satker dapat mengubah status kegiatan.')
+      if (!canManage(db, user, dashboard)) fail(403, 'FORBIDDEN', 'Anda tidak punya izin mengubah status kegiatan.')
       checkRevision(dashboard.activityRevision, revision)
       const status = close ? 'closed' : 'active'
       if (dashboard.activityStatus === status) return { activityStatus: status, activityRevision: revision }
@@ -515,6 +674,8 @@ export class Monitoring {
   async changeAccess(credentials: Credentials, id: string, visibility: Visibility) {
     return this.store.write(db => {
       const { user, dashboard } = this.protect(db, credentials, id, true)
+      const active = dashboard.activeRelease ? db.get<Release>(releaseKey(dashboard, dashboard.activeRelease)) : undefined
+      checkPersonalAccess(active?.definition ?? dashboard.draft, visibility)
       if (dashboard.visibility === visibility) return { visibility }
       dashboard.visibility = visibility
       dashboard.accessRevision++
@@ -603,7 +764,7 @@ export class Monitoring {
   }
 }
 
-export const uploadSchema = z.object({ date: dateSchema, time: timeSchema, mappings: z.string().max(20_000).optional() })
+export const uploadSchema = z.object({ date: dateSchema, time: timeSchema, mappings: z.string().max(20_000).optional(), reuseSnapshot: z.uuid().optional() })
 export const mappingsSchema = z.record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.object({
   sheet: z.string().trim().max(80).optional(), headerRow: z.number().int().min(1).max(10_000).optional(), stopRow: z.number().int().min(2).max(10_100).optional(),
   jsonPath: z.string().trim().max(160).optional(), region: z.string().trim().max(120).optional(), columns: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.string().trim().min(1).max(120)).optional(),

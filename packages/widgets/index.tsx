@@ -2,12 +2,13 @@ import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronRight, ChevronsUpDown, ExternalLink, Maximize2, Search, X } from 'lucide-react'
 import type { CollectionReport, DataRow, Dataset, Field, Report, Value, Widget } from '../contracts/index'
-import { aggregate, delta, indicator, previousDay, sortRows, weightedTarget } from '../metrics/index'
+import { groupedBarLimit, singleBarLimit } from '../contracts/visualization'
+import { aggregate, delta, indicator, previousDay, progressBand, progressBands, sortRows, weightedTarget, type ProgressBand } from '../metrics/index'
 import { pesPace, pesRegions } from '../../templates/regions'
 import { api, conditionDate, fmt, pct, type Sorts } from '../../apps/web/src/api'
 
-const stateColors = ['var(--bps-orange)', 'var(--bps-sky)', 'var(--bps-green)', 'var(--brand)', 'var(--brand-dark)']
-const barColors = ['var(--brand)', 'var(--bps-green)', 'var(--bps-orange)', 'var(--bps-sky)']
+const stateColors = ['var(--report-series-3, var(--bps-orange))', 'var(--report-series-4, var(--bps-sky))', 'var(--report-series-2, var(--bps-green))', 'var(--report-accent, var(--brand))', 'var(--report-deep, var(--brand-dark))']
+const barColors = ['var(--report-accent, var(--brand))', 'var(--report-series-2, var(--bps-green))', 'var(--report-series-3, var(--bps-orange))', 'var(--report-series-4, var(--bps-sky))']
 const empty = { rows: [] }
 const shown = (value: Value | undefined, unit?: Field['unit']) => value == null ? '—' : typeof value === 'number' ? unit === 'percent' ? pct.format(value) : fmt.format(value) : value
 const metricTypes = new Set(['progress', 'kpi'])
@@ -122,7 +123,7 @@ function Bars({ widget, dataset, report, print }: { widget: Widget; dataset: Dat
     return { ...row, bars }
   })
   const sorted = rows.toSorted((a, b) => (b.bars[0] ?? -Infinity) - (a.bars[0] ?? -Infinity))
-  const visible = print ? sorted : sorted.slice(0, series.length > 1 ? 4 : 6)
+  const visible = print ? sorted : sorted.slice(0, series.length > 1 ? groupedBarLimit : singleBarLimit)
   const high = rows.reduce((value, row) => Math.max(value, ...row.bars.map(bar => bar ?? 0)), unit === 'percent' ? 1 : 0)
   const low = rows.reduce((value, row) => Math.min(value, ...row.bars.map(bar => bar ?? 0)), 0)
   const range = high - low || 1
@@ -196,11 +197,25 @@ function Collection({ reports, print }: { reports: CollectionReport[]; print: bo
 
 function AreaTable({ widget, dataset, report, print, sort, onSort, page }: { widget: Widget; dataset: Dataset; report: Report; print: boolean; sort?: Sorts[string]; onSort?: (sort: Sorts[string] | undefined) => void; page?: number }) {
   const [query, setQuery] = useState('')
+  const [band, setBand] = useState<ProgressBand | 'all'>('all')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [fetched, setFetched] = useState<Record<string, DataRow[]>>({})
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState('')
   const data = report.data[dataset.id] ?? empty
+  const people = dataset.grain === 'person'
+  const rowLabel = people ? 'petugas' : 'kabupaten/kota'
+  const group = widget.progressGroup
+  const grouped = useMemo(() => {
+    const counts: Record<ProgressBand, number> = { complete: 0, medium: 0, low: 0, unknown: 0 }
+    const bands = new Map<string, ProgressBand>()
+    if (group) for (const row of data.rows) {
+      const value = progressBand(row.values, group)
+      counts[value]++
+      bands.set(row.code, value)
+    }
+    return { counts, bands }
+  }, [data.rows, group])
   const children = useMemo(() => {
     const result = new Map<string, DataRow[]>()
     for (const row of data.detail ?? []) if (row.parent) result.set(row.parent, [...(result.get(row.parent) ?? []), row])
@@ -227,9 +242,10 @@ function AreaTable({ widget, dataset, report, print, sort, onSort, page }: { wid
     finally { setLoading(current => new Set([...current].filter(code => code !== parent))) }
   }
   const columns = useMemo<ColumnDef<DataRow>[]>(() => [
-    { id: 'name', header: 'Kabupaten / Kota', accessorFn: row => row.name },
+    { id: 'name', header: people ? 'Nama atau kode petugas' : 'Kabupaten / Kota', accessorFn: row => row.name },
     ...(widget.fields ?? []).map(id => ({ id, header: dataset.fields.find(field => field.id === id)?.label ?? id, accessorFn: (row: DataRow) => row.values[id], cell: (context: { getValue: () => unknown }) => shown(context.getValue() as Value, dataset.fields.find(field => field.id === id)?.unit) })),
-  ], [widget.fields, dataset.fields])
+    ...(print && group ? [{ id: 'progress_band', header: 'Kelompok progres', accessorFn: (row: DataRow) => progressBands[grouped.bands.get(row.code) ?? 'unknown'] }] : []),
+  ], [widget.fields, dataset.fields, grouped, group, people, print])
   const rows = useMemo(() => {
     const term = query.toLocaleLowerCase('id-ID').trim()
     const matches = (row: DataRow) => `${row.name} ${row.code}`.toLocaleLowerCase('id-ID').includes(term)
@@ -240,8 +256,8 @@ function AreaTable({ widget, dataset, report, print, sort, onSort, page }: { wid
       const filtered = term && !matches(row) ? descendants.filter(child => matches(child) || data.detail?.some(other => other.code.startsWith(`${child.code}/`) && matches(other))) : descendants
       return [row, ...visit(filtered)]
     })
-    return visit(selected)
-  }, [data, query, sort, print, children, fetched, expanded])
+    return visit(band === 'all' || !group || print ? selected : selected.filter(row => grouped.bands.get(row.code) === band))
+  }, [data, query, sort, print, children, fetched, expanded, band, group, grouped])
   const chunk = 40
   const displayRows = page == null ? rows : rows.slice(page * chunk, (page + 1) * chunk)
   const table = useReactTable({ data: displayRows, columns, getCoreRowModel: getCoreRowModel(), getRowId: row => row.code })
@@ -251,16 +267,20 @@ function AreaTable({ widget, dataset, report, print, sort, onSort, page }: { wid
     onSort?.(next)
   }
   return <article className="panel area-panel" data-widget-id={widget.id}>
-    <div className="area-title"><div><h3>{widget.title}</h3><p>{rows.filter(row => !row.parent).length} kabupaten/kota{query && ' sesuai pencarian'}</p></div>{!print && <label className="search compact-search"><Search size={16} /><input aria-label={`Cari wilayah pada ${dataset.label}`} value={query} onChange={event => setQuery(event.target.value)} placeholder="Cari wilayah…" /></label>}</div>
+    <div className="area-title"><div><h3>{widget.title}</h3><p>{rows.filter(row => !row.parent).length} {rowLabel}{query && ' sesuai pencarian'}</p></div>{!print && <label className="search compact-search"><Search size={16} /><input aria-label={`Cari ${people ? 'petugas' : 'wilayah'} pada ${dataset.label}`} value={query} onChange={event => setQuery(event.target.value)} placeholder={people ? 'Cari petugas…' : 'Cari wilayah…'} /></label>}</div>
+    {!print && group && <div className="segmented progress-groups" aria-label="Kelompok progres petugas">
+      <button type="button" className={band === 'all' ? 'selected' : ''} aria-pressed={band === 'all'} onClick={() => setBand('all')}>Semua ({data.rows.length})</button>
+      {(Object.keys(progressBands) as ProgressBand[]).map(key => <button type="button" key={key} className={band === key ? 'selected' : ''} aria-pressed={band === key} onClick={() => setBand(key)}>{progressBands[key]} ({grouped.counts[key]})</button>)}
+    </div>}
     {error && <p className="empty-inline" role="alert">{error}</p>}
-    <div className="table-scroll" tabIndex={print ? undefined : 0} aria-label={`Tabel ${dataset.label}`} role={print ? undefined : 'region'}><table>
+    <div className={people && !print ? 'table-scroll person-table-scroll' : 'table-scroll'} tabIndex={print ? undefined : 0} aria-label={`Tabel ${dataset.label}`} role={print ? undefined : 'region'}><table>
       <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>{group.headers.map(header => <th key={header.id} scope="col" aria-sort={sort?.field === header.id ? sort.reverse ? 'descending' : 'ascending' : undefined}>
         {print ? flexRender(header.column.columnDef.header, header.getContext()) : <button onClick={() => toggle(header.id)}>{flexRender(header.column.columnDef.header, header.getContext())} {sort?.field === header.id ? sort.reverse ? <ArrowDown size={13} /> : <ArrowUp size={13} /> : <ChevronsUpDown size={13} />}</button>}
       </th>)}</tr>)}</thead>
-      <tbody>{table.getRowModel().rows.map(row => <tr key={row.id} className={row.original.parent ? 'child-row' : undefined}>{row.getVisibleCells().map((cell, index) => index === 0 ? <th scope="row" key={cell.id}><span className="region-name" style={{ paddingInlineStart: `${(row.id.split('/').length - 1) * 13}px` }}>
-        {!print && !query && children.has(row.id) && <button className="expand-button" aria-expanded={expanded.has(row.id)} aria-label={`${expanded.has(row.id) ? 'Ciutkan' : 'Buka rincian'} ${row.original.name}`} disabled={loading.has(row.id)} onClick={() => void expand(row.id)}>{expanded.has(row.id) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>}
-        <span>{row.original.name}</span><small>{row.original.code}</small></span></th> : <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody>
-      {showFooter && <tfoot><tr><th scope="row">Provinsi Sumatera Barat{query && <small>Seluruh provinsi</small>}</th>{(widget.fields ?? []).map(id => {
+      <tbody>{table.getRowModel().rows.map(row => <tr key={row.id} className={row.original.parent ? 'child-row' : undefined}>{row.getVisibleCells().map((cell, index) => index === 0 ? <th scope="row" key={cell.id}><span className="region-name" style={{ paddingInlineStart: people ? undefined : `${(row.id.split('/').length - 1) * 11}px` }}>
+        {!print && !query && children.has(row.id) && <button type="button" className="expand-button" aria-expanded={expanded.has(row.id)} aria-label={`${expanded.has(row.id) ? 'Ciutkan' : 'Buka rincian'} ${row.original.name}`} disabled={loading.has(row.id)} onClick={() => void expand(row.id)}>{expanded.has(row.id) ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}</button>}
+        <span>{row.original.name}</span>{!people && <small>{row.original.code}</small>}</span></th> : <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody>
+      {showFooter && !people && <tfoot><tr><th scope="row">Provinsi Sumatera Barat{query && <small>Seluruh provinsi</small>}</th>{(widget.fields ?? []).map(id => {
         const field = dataset.fields.find(field => field.id === id)
         const result = aggregate(data, id, widget.provinceFooter?.rules[id] ?? { op: field?.unit === 'count' ? 'sum' : 'none' }, dataset)
         return <td key={id} title={result.reason ?? `${result.coverage} dari ${data.rows.length} wilayah`}>
@@ -269,7 +289,7 @@ function AreaTable({ widget, dataset, report, print, sort, onSort, page }: { wid
         </td>
       })}</tr></tfoot>}
     </table></div>
-    {!rows.length && <p className="empty-inline">Tidak ada wilayah yang cocok.</p>}
+    {!rows.length && <p className="empty-inline">{people ? 'Tidak ada petugas yang cocok.' : 'Tidak ada wilayah yang cocok.'}</p>}
   </article>
 }
 
@@ -307,7 +327,7 @@ export function DashboardWidgets({ report, sorts = {}, onSort, print = false }: 
     else groups.push({ kind, items: [item] })
   }
   const printHeading = <div className="print-heading"><b>{definition.title}</b><span>{conditionDate(report.condition.date)} · {report.condition.time} WIB{report.demo ? ' · Data sintetis' : ''}</span></div>
-  return <div className="dashboard-content">{print && <div className="report-export-part"><Hero report={report} /></div>}
+  return <div className={`dashboard-content theme-${definition.theme}`}>{print && <div className="report-export-part"><Hero report={report} /></div>}
     {groups.map((group, index) => {
       const key = group.items[0].id
       if (group.kind === 'table' && print) return group.items.flatMap(item => {
@@ -317,7 +337,7 @@ export function DashboardWidgets({ report, sorts = {}, onSort, print = false }: 
       })
       if (group.kind === 'table') {
         const selected = group.items.find(item => item.id === active[key]) ?? group.items[0]
-        return <section className="section" key={key}><div className="section-heading"><h2>Rincian wilayah</h2></div>
+        return <section className="section" key={key}><div className="section-heading"><h2>{definition.datasets.find(dataset => dataset.id === selected.dataset)?.grain === 'person' ? 'Rincian petugas' : 'Rincian wilayah'}</h2></div>
           {group.items.length > 1 && <div className="segmented" aria-label="Pilih tabel">{group.items.map(item => <button key={item.id} aria-pressed={selected.id === item.id} className={selected.id === item.id ? 'selected' : ''} onClick={() => setActive(current => ({ ...current, [key]: item.id }))}>{group.items.filter(other => other.dataset === item.dataset).length > 1 ? item.title : definition.datasets.find(dataset => dataset.id === item.dataset)?.label ?? item.title}</button>)}</div>}
           {widget(selected)}
         </section>

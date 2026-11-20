@@ -21,6 +21,20 @@ Buka [portal lokal](http://127.0.0.1:5173/). Halaman awal menampilkan PES sintet
 
 Ketiga akun lokal menggunakan kata sandi `Monitoring!2026`. Akun contoh dibuat pada database pengembangan baru saat `ADMIN_PASSWORD` kosong. Port lokal dan pilihan penyimpanan dapat diatur melalui salinan `.env.example` di `.env`.
 
+## Profil dan pengelolaan akun
+
+Di **Profil**, pengguna dapat mengganti nama tampilan, memilih avatar dari [IP as Logo](https://visualskills.dev/ip-as-logo), dan mengubah kata sandi. Perubahan kata sandi mengakhiri sesi lain pada akun itu.
+
+Untuk membuat akun Developer pertama, jalankan perintah berikut dengan koneksi penyimpanan Pansus dan variabel `MONITORING_NEW_PASSWORD` berisi kata sandi awal yang sudah ditetapkan.
+
+```powershell
+npm run account -- sumbar developer developer@satker.example "Developer Satker"
+```
+
+Developer mengelola pengguna dan role di satkernya melalui **Kelola pengguna**. Pengaturan **Izin Superadmin** menentukan apakah Superadmin dapat mengelola dashboard dan menambah akun Operator atau Pembaca. Akun Developer dibuat melalui CLI. Akun Admin, Operator, dan Pembaca yang sudah ada mempertahankan perannya.
+
+## Alur publikasi
+
 1. Buka **Galeri template → Gunakan contoh**. Coba **Pratinjau** sebelum mengganti sumber.
 2. Buka **Perbarui data**, pilih tanggal dan jam kondisi WIB, lalu unggah slot yang diperlukan. Periksa total, peringatan, dan contoh baris. Masukkan kembali kata sandi akun untuk menerapkan.
 3. Buka **Terbitkan & akses**, pilih hak baca, dan terbitkan. Penanda data sintetis tetap muncul pada salinan contoh sampai data kegiatan menggantikan dataset. Dataset yang cocok dengan contoh bawaan ditahan pada pemeriksaan. Untuk simulasi alur publikasi, ubah setidaknya satu nilai status pada setiap dataset contoh sambil mempertahankan target yang diwajibkan.
@@ -55,7 +69,9 @@ Ekspor per penugasan, PDF, dan tangkapan layar memerlukan struktur sumber tersen
 
 ### Usulan konfigurasi dengan Gemini
 
-Isi `GEMINI_API_KEY` pada lingkungan API. Di Studio, buka **Perbarui data**, pilih berkas CSV, lalu klik **Analisis CSV**. Untuk PES, buka **Pilih per dataset** agar tombol tersedia pada tiap ekspor. Template baku mendapat saran pemetaan. Dashboard **Susun sendiri** yang belum memiliki data juga mendapat saran tipe kolom dan komponen.
+Isi `GEMINI_API_KEY` pada lingkungan API. Di **Studio → Perbarui data**, panel **Bantuan Gemini** menunjukkan cara mengaktifkan **Analisis CSV**. Jika memakai deteksi otomatis PES atau satu workbook Susenas–Seruti, pilih **Pilih berkas per dataset**, lalu unggah CSV pada sumber yang ingin dianalisis. Template baku mendapat saran pemetaan. Sumber yang belum dikonfigurasi pada dashboard **Susun sendiri** juga mendapat saran tipe kolom dan komponen.
+
+Untuk progres petugas, gunakan satu baris per orang dan satu kolom identitas unik seperti `nama petugas` atau `kode petugas`. Sertakan kolom `Progres (%)` atau pasangan aktual dan target. Pada dashboard **Susun sendiri**, Gemini dapat menyarankan tabel dengan kelompok **100% atau lebih**, **50%–<100%**, **Di bawah 50%**, dan **Belum ada angka**. Susunan manual tersedia melalui **Editor → Kolom data** dan **Komponen**. Rilis yang memuat rincian per orang menggunakan hak baca undangan.
 
 Pansus hanya mengirim judul kolom yang lolos penyaringan, tipe nilai, dan ID struktur template. Isi baris, angka sumber, dan nama berkas tetap di Pansus. Server mengecek usulan terhadap seluruh CSV dan aturan template, termasuk cakupan serta target SLS/UB. Kolom kategori pada draf baru bersifat privat. Periksa usulan, terapkan ke draf atau pemetaan, lalu lanjutkan pemeriksaan dan konfirmasi impor yang biasa.
 

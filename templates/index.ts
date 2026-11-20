@@ -83,6 +83,6 @@ const custom: Definition = {
 export const templates = {
   pes: { name: 'Progres lapangan PES', description: 'Pantau progres SLS serta penugasan Non-UB dan UB dari tiga ekspor data lapangan.', definition: pes },
   susenas: { name: 'Pengolahan Susenas–Seruti', description: 'Ringkas target dan capaian pengolahan dua kegiatan dari satu workbook atau dua berkas.', definition: susenas },
-  custom: { name: 'Susun sendiri', description: 'Mulai dari satu dataset wilayah dan atur kolom serta komponen sesuai kegiatan.', definition: custom },
+  custom: { name: 'Susun sendiri', description: 'Atur sumber, kolom, dan komponen untuk memantau kegiatan per wilayah atau per petugas.', definition: custom },
 }
 export const templateDefinition = (id: TemplateId) => structuredClone(templates[id].definition)

@@ -1,8 +1,17 @@
-import type { DataRow, Dataset, DatasetData, Rule, Value, Values } from '../contracts/index'
+import type { DataRow, Dataset, DatasetData, Rule, Value, Values, Widget } from '../contracts/index'
 import { compileFormulas, evaluate } from './formula'
 
 const number = (value: Value | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0)
+export const progressBands = { complete: '100% atau lebih', medium: '50%–<100%', low: 'Di bawah 50%', unknown: 'Belum ada angka' } as const
+export type ProgressBand = keyof typeof progressBands
+export function progressBand(values: Values, group: NonNullable<Widget['progressGroup']>): ProgressBand {
+  const actual = values[group.field]
+  const target = group.target ? values[group.target] : 1
+  if (!number(actual) || !number(target) || target <= 0 || actual < 0) return 'unknown'
+  const rate = actual / target
+  return rate >= 1 ? 'complete' : rate >= .5 ? 'medium' : 'low'
+}
 export function applyFormulas(dataset: Dataset, data: DatasetData): DatasetData {
   const formulas = compileFormulas(dataset)
   return { ...data, rows: data.rows.map(row => {

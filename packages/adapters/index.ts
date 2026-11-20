@@ -9,6 +9,8 @@ export type InputFile = { name: string; bytes: Uint8Array }
 const MAX_ROWS = 10_000
 const MAX_COLUMNS = 100
 const regionHeaders = ['kode wilayah', 'kode_wilayah', 'wilayah', 'level_2_full_code', 'kode kab/kota', 'nama kab/kota', 'code', 'kode', 'kabupaten/kota']
+const personHeaders = ['nama petugas', 'nama petugas lapangan', 'nama pencacah', 'nama pengawas', 'nama pegawai', 'nama peserta', 'nama operator', 'nama lengkap', 'nama', 'full name', 'name', 'id petugas', 'kode petugas', 'petugas id', 'petugas', 'enumerator']
+const personHeader = (input: string) => input.replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim()
 const statusHeaders = ['status', 'assignment_status', 'status assignment', 'status penugasan', 'status sls']
 const countHeaders = ['jumlah', 'count', 'total', 'jumlah penugasan']
 const headerScan = 25
@@ -165,20 +167,23 @@ function value(input: unknown, field: Field, location: string, blankZero: boolea
   return field.unit === 'percent' && field.scale !== 'fraction' ? result / 100 : result
 }
 
-export function profileCsv(file: InputFile, headerRow?: number, stopRow?: number) {
+export function profileCsv(file: InputFile, headerRow?: number, stopRow?: number, identity?: string) {
   if (!/\.csv$/i.test(file.name)) invalid('AI_CSV_REQUIRED', 'Pilih berkas CSV untuk bantuan Gemini.')
-  const parsed = source(file, { headerRow, stopRow }, headers => headers.some(header => regionHeaders.includes(header)))
+  const parsed = source(file, { headerRow, stopRow }, headers => headers.some(header => regionHeaders.includes(header) || personHeaders.includes(personHeader(header)) || header === normalize(identity)))
   const rows = parsed.rows.filter(row => row.cells.some(item => item != null && item !== '') && !row.cells.every((item, index) => normalize(item) === parsed.headers[index]))
   const columns = parsed.headers.map((header, index) => {
     const values = rows.map(row => row.cells[index]).filter(item => item != null && item !== '')
     const data = values.filter(item => !province(item))
-    const region = data.length > 0 && values.length === rows.length && data.every(item => findRegion(regionText(item)))
+    const matched = data.map(item => findRegion(regionText(item))?.code)
+    const region = matched.length > 0 && values.length === rows.length && matched.every(Boolean)
+    const uniqueRegions = region && new Set(matched).size === matched.length
+    const person = (personHeaders.includes(personHeader(header)) || Boolean(identity && header === normalize(identity))) && (values.length === rows.length && values.length > 0)
     const numeric = values.map(item => numericInput(String(item).trim().replace(/\s*%$/, '')))
     const allNumbers = numeric.length > 0 && numeric.every(Number.isFinite)
     const percent = allNumbers && values.some(item => String(item).trim().endsWith('%'))
     const kind = !values.length ? 'empty' : !allNumbers ? 'category' : percent ? 'percentage' :
       numeric.every(item => Number.isSafeInteger(item) && item >= 0) ? 'count' : 'number'
-    return { index, header, region, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
+    return { index, header, region, uniqueRegions, person, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
   })
   return { headerRow: parsed.headerRow!, columns }
 }
@@ -217,14 +222,18 @@ function readStatusRows(parsed: Source, key: number, statuses: Field[], file: In
 }
 
 export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMapping, pes: boolean): DatasetData {
-  const regions = mapping.region ? [normalize(mapping.region)] : regionHeaders
+  const isPerson = dataset.grain === 'person'
+  const keys = mapping.region ? [normalize(mapping.region)] : isPerson ? personHeaders : regionHeaders
   const inputFields = dataset.fields.filter(field => !field.formula && !field.derived)
   const statuses = inputFields.filter(field => (dataset.id === 'sls' ? slsFields : statusFields).includes(field.id))
   const canPivot = pes && statuses.length === inputFields.length && !Object.keys(mapping.columns ?? {}).length
   const isLong = (headers: string[]) => canPivot && headers.some(header => statusHeaders.includes(header)) && headers.some(header => countHeaders.includes(header))
   const aliases = inputFields.flatMap(field => mapping.columns?.[field.id] ? [normalize(mapping.columns[field.id])] : fieldHeaders(field))
-  const parsed = source(file, mapping, headers => headers.some(header => regions.includes(header)) && (isLong(headers) || headers.some(header => aliases.includes(header))))
-  const key = match(parsed.headers, regions, 'Kode wilayah', file.name)
+  const headersForKey = (headers: string[]) => isPerson && !mapping.region ? headers.map(personHeader) : headers
+  const parsed = source(file, mapping, headers => headersForKey(headers).some(header => keys.includes(header)) && (isLong(headers) || headers.some(header => aliases.includes(header))))
+  const identityHeaders = headersForKey(parsed.headers)
+  const namedKey = isPerson && !mapping.region ? keys.find(item => identityHeaders.includes(item)) : undefined
+  const key = match(identityHeaders, namedKey ? [namedKey] : keys, isPerson ? 'Nama atau kode petugas' : 'Kode wilayah', file.name)
   if (isLong(parsed.headers) && !parsed.headers.some(header => aliases.includes(header))) {
     const rows = readStatusRows(parsed, key, statuses, file)
     if (!rows.length) invalid('EMPTY_DATA', 'Tidak ada baris kabupaten/kota yang dapat dibaca.', file.name)
@@ -245,6 +254,16 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
     if (cells.every(item => item == null || item === '')) continue
     const input = cells[key]
     if (normalize(input) === parsed.headers[key]) continue
+    if (isPerson) {
+      const name = typeof input === 'string' || typeof input === 'number' ? String(input).trim() : ''
+      if (!name || name.length > 120) invalid('INVALID_PERSON', 'Isi nama atau kode petugas hingga 120 karakter.', location)
+      const code = normalize(name)
+      if (seen.has(code)) invalid('DUPLICATE_PERSON', 'Identitas petugas muncul lebih dari sekali. Gunakan satu baris per orang atau pilih kolom kode yang unik.', location)
+      seen.add(code)
+      const values = Object.fromEntries(fields.map(({ field, index }) => [field.id, value(cells[index], field, `${location}, ${field.label}`, false)]))
+      rows.push({ code, name, values, source: location })
+      continue
+    }
     const isProvince = province(input)
     const region = isProvince ? null : findRegion(regionText(input))
     if (pes && isProvince) continue
@@ -260,7 +279,7 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
     seen.add(region!.code)
     rows.push({ ...region!, values, source: location })
   }
-  if (!rows.length) invalid('EMPTY_DATA', 'Tidak ada baris kabupaten/kota yang dapat dibaca.', file.name)
+  if (!rows.length) invalid('EMPTY_DATA', isPerson ? 'Tidak ada baris petugas yang dapat dibaca.' : 'Tidak ada baris kabupaten/kota yang dapat dibaca.', file.name)
   return applyFormulas(dataset, { rows, reported })
 }
 

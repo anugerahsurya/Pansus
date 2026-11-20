@@ -5,6 +5,7 @@ import '@fontsource-variable/plus-jakarta-sans'
 import { api, type Account } from './api'
 import { AuthContext, Loading, Shell } from './common'
 import { Catalog, Guide, Login, PrintReport, Reader, ShareExchange, Templates } from './portal'
+import { Members, Profile } from './profile'
 import './styles.css'
 
 const Studio = lazy(() => import('./studio'))
@@ -21,6 +22,8 @@ function App() {
     <Route path="/template" element={<Templates />} />
     <Route path="/panduan" element={<Guide />} />
     <Route path="/masuk" element={<Login />} />
+    <Route path="/profil" element={<Profile />} />
+    <Route path="/pengguna" element={<Members />} />
     <Route path="/bagikan" element={<ShareExchange />} />
     <Route path="/d/:slug" element={<Reader />} />
     <Route path="/studio" element={<Studio />} />

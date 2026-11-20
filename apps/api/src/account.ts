@@ -2,12 +2,13 @@ import './config'
 import { randomUUID } from 'node:crypto'
 import { Algorithm, hash } from '@node-rs/argon2'
 import { z } from 'zod'
+import { accountRoles } from '../../../packages/contracts/accounts'
 import type { User } from './model'
 import { openStore } from './store'
 
 const input = z.object({
   tenant: z.string().regex(/^[a-z0-9_-]{2,40}$/),
-  role: z.enum(['admin', 'operator', 'reader']),
+  role: z.enum(accountRoles),
   email: z.email().max(100).transform(email => email.toLowerCase()),
   name: z.string().trim().min(2).max(100),
   password: z.string().min(12).max(200),
@@ -15,7 +16,7 @@ const input = z.object({
   tenant: process.argv[2], role: process.argv[3], email: process.argv[4], name: process.argv[5], password: process.env.MONITORING_NEW_PASSWORD,
 })
 if (!input.success) {
-  console.error('Pemakaian: npm run account -- <satker-id> <admin|operator|reader> <email> "<nama>". Atur MONITORING_NEW_PASSWORD (12–200 karakter).')
+  console.error('Pemakaian: npm run account -- <satker-id> <developer|superadmin|admin|operator|reader> <email> "<nama>". Atur MONITORING_NEW_PASSWORD (12–200 karakter).')
   process.exit(1)
 }
 const { password, ...member } = input.data

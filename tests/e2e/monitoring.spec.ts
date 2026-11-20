@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { unzipSync } from 'fflate'
+import { csvAnalysisStream } from '../../packages/contracts/csv-analysis'
 import { exampleFiles } from '../../fixtures/synthetic/index'
 
 const secret = 'Monitoring!2026'
@@ -51,6 +52,221 @@ test('konfigurasi CSV tersimpan bersama draf dan menolak pemetaan dataset asing'
   expect(reloaded.mappings.wilayah).toEqual(mapping)
 })
 
+test('pop-up menunjukkan progres analisis CSV sampai usulan siap', async ({ page }) => {
+  await login(page.request)
+  const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
+  const { id } = await created.json()
+  await page.route(`**/api/admin/dashboards/${id}`, async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, json: { ...await response.json(), aiAvailable: true } })
+  })
+  let finish!: () => void
+  const ready = new Promise<void>(resolve => { finish = resolve })
+  await page.route(`**/api/admin/dashboards/${id}/ai-drafts`, async route => {
+    await ready
+    await route.fulfill({
+      contentType: csvAnalysisStream,
+      body: [
+        { type: 'progress', stage: 'mapping' },
+        { type: 'progress', stage: 'validating' },
+        { type: 'result', data: { model: 'gemini-test', rows: 1, warnings: [], fields: [], mapping: { region: 'wilayah', headerRow: 1 } } },
+      ].map(event => JSON.stringify(event) + '\n').join(''),
+    })
+  })
+  await page.goto(`/studio/${id}?tab=data`)
+  await page.getByLabel('Wilayah', { exact: true }).setInputFiles({
+    name: 'wilayah.csv', mimeType: 'text/csv', buffer: Buffer.from('wilayah,target,selesai\n1303,10,5'),
+  })
+  const analyze = page.getByRole('button', { name: 'Analisis CSV Wilayah' })
+  await analyze.click()
+  const dialog = page.getByRole('dialog', { name: 'Analisis CSV Wilayah' })
+  await expect(dialog.getByRole('progressbar')).toHaveJSProperty('value', 0)
+  await dialog.getByRole('button', { name: 'Sembunyikan' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(analyze).toBeDisabled()
+  await page.getByRole('button', { name: 'Lihat progres analisis' }).click()
+  finish()
+  await expect(dialog.getByRole('progressbar')).toHaveJSProperty('value', 100)
+  await dialog.getByRole('button', { name: 'Lihat usulan' }).click()
+  await expect(page.getByRole('region', { name: 'Usulan Gemini' }).getByText(/1 wilayah diperiksa/)).toBeVisible()
+})
+
+test('Bantuan Gemini terlihat pada profil bawaan dan memberi petunjuk sesuai ketersediaan', async ({ page }) => {
+  await login(page.request)
+  const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'pes' } })
+  const { id } = await created.json()
+  let aiAvailable = false
+  await page.route(`**/api/admin/dashboards/${id}`, async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, json: { ...await response.json(), aiAvailable } })
+  })
+  await page.goto(`/studio/${id}?tab=data`)
+  const help = page.getByRole('region', { name: 'Bantuan Gemini' })
+  await expect(help.getByText(/Gemini belum tersedia/)).toBeVisible()
+  await expect(help.getByText('Belum dikonfigurasi')).toBeVisible()
+  await expect(help.getByRole('button', { name: 'Analisis CSV', exact: true })).toBeDisabled()
+  aiAvailable = true
+  await page.route(`**/api/admin/dashboards/${id}/ai-status`, route => route.fulfill({ json: { status: 'ready' } }))
+  await page.reload()
+  await help.getByRole('button', { name: 'Cek koneksi Gemini' }).click()
+  await expect(help.getByText('Terhubung')).toBeVisible()
+  await help.getByRole('button', { name: 'Pilih berkas per dataset' }).click()
+  await expect(page.getByLabel('Cara memilih berkas')).toHaveValue('manual')
+  const source = page.getByLabel('Non-UB', { exact: true })
+  await source.setInputFiles({
+    name: 'nonub.csv', mimeType: 'text/csv', buffer: Buffer.from('wilayah,target,selesai\n1303,10,5'),
+  })
+  await expect(help.getByRole('button', { name: 'Analisis CSV Non-UB', exact: true })).toBeEnabled()
+})
+
+test('draf Gemini dapat ditambah kolom dan sumber CSV bertahap untuk kondisi yang sama', async ({ page }) => {
+  await login(page.request)
+  const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
+  const { id } = await created.json()
+  const path = `/api/admin/dashboards/${id}`
+  const draft = await (await page.request.get(path)).json()
+  await page.route(`**${path}`, async route => {
+    const response = await route.fetch()
+    await route.fulfill({ response, json: { ...await response.json(), aiAvailable: true } })
+  })
+  await page.route(`**${path}/ai-drafts`, async route => {
+    await route.fulfill({
+      contentType: csvAnalysisStream,
+      body: JSON.stringify({ type: 'result', data: {
+        model: 'gemini-test', rows: 1, warnings: [], fields: draft.draft.datasets[0].fields,
+        mapping: { region: 'wilayah', columns: { target: 'sasaran', selesai: 'realisasi' }, headerRow: 1 },
+        definition: draft.draft, expectedRevision: draft.draftRevision,
+      } }) + '\n',
+    })
+  })
+  const csv = (name: string, contents: string) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(contents) })
+  await page.goto(`/studio/${id}?tab=data`)
+  await page.getByLabel('Tanggal kondisi').fill('2026-11-14')
+  await page.getByLabel('Jam kondisi (WIB)').fill('13:00')
+  await page.getByLabel('Wilayah', { exact: true }).setInputFiles(csv('progres.csv', 'wilayah,sasaran,realisasi,catatan\n1303,10,5,Lengkap'))
+  await page.getByRole('button', { name: 'Analisis CSV Wilayah' }).click()
+  await page.getByRole('button', { name: 'Lihat usulan' }).click()
+  await page.getByRole('button', { name: 'Terapkan ke draf' }).click()
+  await page.getByRole('button', { name: 'Atur kolom sumber' }).click()
+  const fields = page.getByRole('region', { name: 'Kolom data' })
+  await expect(fields.getByText('Target', { exact: false }).first()).toBeVisible()
+  await expect(page.getByLabel('Judul kegiatan')).toHaveCount(0)
+  await fields.getByRole('button', { name: 'Tambah kolom' }).click()
+  await expect(fields.getByRole('textbox', { name: 'Nama kolom' })).toBeFocused()
+  await fields.getByRole('textbox', { name: 'Nama kolom' }).fill('Catatan')
+  await fields.getByRole('combobox', { name: 'Satuan' }).selectOption('category')
+  await page.getByRole('button', { name: 'Simpan draf' }).click()
+  await expect(page.getByText('Semua perubahan tersimpan')).toBeVisible()
+  await page.getByRole('button', { name: 'Keterangan umum' }).click()
+  await expect(page.getByRole('region', { name: 'Keterangan umum' }).getByLabel('Judul kegiatan')).toBeVisible()
+  await expect(fields).toHaveCount(0)
+  await page.getByText('Sensus Ekonomi', { exact: true }).click()
+  await expect(page.getByRole('radio', { name: 'Sensus Ekonomi' })).toBeChecked()
+  await expect(page.locator('.design-preview .hero')).toHaveCSS('background-color', 'rgb(247, 144, 57)')
+  await page.getByRole('button', { name: 'Simpan draf' }).click()
+  await expect(page.getByText('Semua perubahan tersimpan')).toBeVisible()
+
+  const check = page.getByRole('button', { name: 'Periksa unggahan' })
+  const apply = async (message = /Data tersimpan pada draf/) => {
+    await check.click()
+    await page.getByLabel('Kata sandi konfirmasi').fill(secret)
+    await page.getByRole('button', { name: 'Terapkan hasil unggahan' }).click()
+    await expect(page.getByText(message)).toBeVisible()
+  }
+  await page.getByRole('button', { name: 'Perbarui data', exact: true }).click()
+  await expect(page.getByLabel('Wilayah', { exact: true })).toHaveJSProperty('value', 'C:\\fakepath\\progres.csv')
+  await apply()
+  await page.getByRole('button', { name: 'Tambah sumber data' }).click()
+  await page.getByLabel('Nama sumber baru').fill('Validasi')
+  await page.getByRole('button', { name: 'Simpan sumber' }).click()
+  await expect(page.getByRole('heading', { name: '2 sumber data' })).toBeVisible()
+  await expect(page.getByText('Tersimpan · progres.csv')).toBeVisible()
+  await page.getByLabel('Validasi', { exact: true }).setInputFiles(csv('validasi.csv', 'wilayah,nilai\n1303,2'))
+  await page.getByLabel('Jam kondisi (WIB)').fill('14:00')
+  await expect(check).toBeDisabled()
+  await page.getByRole('button', { name: /Pakai kondisi terakhir/ }).click()
+  await apply()
+  const after = await (await page.request.get(path)).json()
+  expect(Object.keys(after.savedInputs.files)).toEqual(expect.arrayContaining(['wilayah', after.draft.datasets[1].id]))
+  expect(after.preview.data.wilayah.rows[0].values.selesai).toBe(5)
+  expect(after.preview.data[after.draft.datasets[1].id].rows[0].values.nilai).toBe(2)
+
+  const published = await page.request.post(`${path}/publish`, { headers, data: { visibility: 'public', expectedRevision: after.draftRevision } })
+  expect(published.ok()).toBeTruthy()
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '2 sumber data' })).toBeVisible()
+  await page.getByLabel('Tanggal kondisi').fill('2026-11-15')
+  await page.getByLabel('Jam kondisi (WIB)').fill('14:00')
+  await page.getByLabel('Wilayah', { exact: true }).setInputFiles(csv('progres-baru.csv', 'wilayah,sasaran,realisasi,catatan\n1303,10,8,Lengkap'))
+  await expect(check).toBeDisabled()
+  await page.getByLabel('Validasi', { exact: true }).setInputFiles(csv('validasi-baru.csv', 'wilayah,nilai\n1303,3'))
+  await apply(/Pembaruan tersimpan/)
+  const report = await (await page.request.get(`/api/d/${after.slug}`)).json()
+  expect(report.condition).toEqual({ date: '2026-11-15', time: '14:00' })
+  expect(report.data.wilayah.rows[0].values.selesai).toBe(8)
+  expect(report.definition.theme).toBe('economy')
+})
+
+test('gulir pratinjau, profil dan tampilan progres petugas dengan undangan', async ({ page, request }) => {
+  await login(page.request)
+  await page.setViewportSize({ width: 1280, height: 600 })
+  await page.goto('/template')
+  const template = page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Pengolahan Susenas–Seruti' }) })
+  await template.getByRole('button', { name: 'Gunakan contoh' }).click()
+  const preview = page.getByRole('region', { name: 'Isi pratinjau dashboard' })
+  await expect(preview.getByRole('heading', { name: 'Pengolahan Susenas–Seruti', exact: true })).toBeVisible()
+  expect(await preview.evaluate(panel => panel.scrollHeight > panel.clientHeight)).toBeTruthy()
+  expect(await page.evaluate(() => {
+    const main = document.querySelector('main')!
+    return document.scrollingElement!.scrollHeight - (main.getBoundingClientRect().bottom + scrollY)
+  })).toBeLessThanOrEqual(1)
+  await preview.focus()
+  await page.keyboard.press('End')
+  await expect(preview.getByRole('link', { name: /Buka tautan/ })).toBeInViewport()
+  await page.getByRole('link', { name: 'Profil', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Ubah kata sandi' })).toBeVisible()
+  const avatar = page.getByRole('radio', { name: 'Avatar 20', exact: true })
+  await expect(page.getByRole('radio', { name: /^Avatar \d+$/ })).toHaveCount(20)
+  await page.locator('.avatar-option').filter({ has: avatar }).click()
+  await page.getByRole('button', { name: 'Simpan profil' }).click()
+  await expect(page.getByText('Profil disimpan.')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Profil', exact: true }).locator('img')).toHaveAttribute('src', '/avatars/20.webp')
+  await page.getByRole('button', { name: 'Mode gelap' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-mode', 'dark')
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Mode gelap' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(avatar).toBeChecked()
+
+  const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
+  const { id } = await created.json()
+  const route = `/api/admin/dashboards/${id}`
+  const { draft, draftRevision, slug } = await (await page.request.get(route)).json()
+  draft.datasets = [{ id: 'wilayah', grain: 'person', label: 'Petugas', fields: [{ id: 'progres', label: 'Progres', unit: 'percent' }] }]
+  draft.widgets = [{ id: 'orang', title: 'Progres petugas', type: 'table', width: 'full', dataset: 'wilayah', fields: ['progres'], progressGroup: { field: 'progres' } }]
+  const saved = await page.request.patch(`${route}/draft`, { headers, data: { definition: draft, expectedRevision: draftRevision } })
+  expect(saved.ok()).toBeTruthy()
+  const { draftRevision: revision } = await saved.json()
+  const buffer = Buffer.from(['nama petugas,progres', ...Array.from({ length: 100 }, (_, i) => `Petugas ${i + 1},${['100%', '50%', '49%', ''][i % 4]}`)].join('\n'))
+  const upload = await page.request.post(`${route}/imports`, { headers, multipart: { date: '2026-11-20', time: '10:00', wilayah: { name: 'petugas.csv', mimeType: 'text/csv', buffer } } })
+  expect(upload.ok()).toBeTruthy()
+  const job = await importReady(page.request, (await upload.json()).id)
+  const { proof } = await (await page.request.post('/api/auth/confirm', { headers, data: { jobId: job.id, password: secret } })).json()
+  const committed = await page.request.post(`/api/admin/imports/${job.id}/commit`, { headers, data: { proof, hash: job.hash, idempotencyKey: 'fcf43427-42e9-4c5b-b15f-44559fbcafbe' } })
+  expect(committed.ok()).toBeTruthy()
+  const publish = (visibility: string) => page.request.post(`${route}/publish`, { headers, data: { visibility, expectedRevision: revision } })
+  expect((await publish('public')).status()).toBe(422)
+  expect((await publish('invite')).ok()).toBeTruthy()
+  expect((await request.get(`/api/d/${slug}`)).status()).toBe(404)
+  expect((await page.request.patch(`${route}/access`, { headers, data: { visibility: 'link' } })).status()).toBe(422)
+  await page.goto(`/d/${slug}`)
+  const people = page.getByRole('region', { name: 'Tabel Petugas' })
+  await expect(people.getByRole('row')).toHaveCount(101)
+  for (const group of ['100% atau lebih (25)', '50%–<100% (25)', 'Di bawah 50% (25)', 'Belum ada angka (25)']) {
+    await page.getByRole('button', { name: group, exact: true }).click()
+    await expect(people.getByRole('row')).toHaveCount(26)
+  }
+})
+
 async function uploadFromStudio(page: Page, day: 0 | 1) {
   const files = fixture(day)
   await page.getByLabel('Tanggal kondisi').fill(day ? '2026-11-14' : '2026-11-13')
@@ -86,6 +302,12 @@ test('PES melalui Studio, perubahan alias, tautan yang sama dan dua pembaca', as
   await editor.fill('Progres PES untuk pemeriksaan')
   await expect(live.getByRole('heading', { name: 'Progres PES untuk pemeriksaan' })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: 'Buka navigasi' }).click()
+  const navigation = page.getByRole('navigation', { name: 'Navigasi utama' })
+  await expect(navigation.getByRole('link', { name: 'Studio pengelola' })).toHaveAttribute('aria-current', 'page')
+  await page.keyboard.press('Escape')
+  await expect(navigation).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Buka navigasi' })).toBeFocused()
   await expect(live).toBeHidden()
   await page.getByRole('button', { name: 'Pratinjau langsung', exact: true }).click()
   await expect(live.getByRole('heading', { name: 'Progres PES untuk pemeriksaan' })).toBeVisible()

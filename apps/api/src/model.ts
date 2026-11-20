@@ -1,12 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { HttpException } from '@nestjs/common'
-import type { CollectionReport, Condition, Definition, Notice, SnapshotData, TemplateId, UploadMapping, Visibility } from '../../../packages/contracts/index'
+import type { CollectionReport, Condition, Dataset, Definition, Notice, SnapshotData, TemplateId, UploadMapping, Visibility } from '../../../packages/contracts/index'
 import type { Records } from './store'
+import { defaultSuperadminPolicy, type Account, type AccountPermissions, type Role, type SuperadminPolicy } from '../../../packages/contracts/accounts'
 
-export type Role = 'admin' | 'operator' | 'reader'
-export type User = { id: string; tenant: string; email: string; name: string; role: Role; hash: string }
-export type Account = Omit<User, 'hash'>
-export type Session = { userId: string; expires: number }
+export type User = { id: string; tenant: string; email: string; name: string; role: Role; hash: string; avatar?: number; passwordVersion?: number }
+export type Session = { userId: string; expires: number; passwordVersion?: number }
 export type AccessSession = { dashboardId: string; grantId: string; expires: number }
 export type Grant = { id: string; mode: 'link' | 'invite'; hash?: string; email?: string; expires?: number }
 export type Dashboard = {
@@ -17,19 +16,30 @@ export type Dashboard = {
   demoVersion?: number;
   archivedAt?: string | null;
 }
-export type Snapshot = Condition & { id: string; data: SnapshotData; collection?: CollectionReport[]; hash: string; demo: boolean; createdAt: string; revision: number; signature: string }
+export type Snapshot = Condition & { id: string; data: SnapshotData; collection?: CollectionReport[]; hash: string; demo: boolean; createdAt: string; revision: number; signature: string; grains?: Record<string, Dataset['grain']> }
 export type Release = Condition & { id: string; snapshotId: string; definition: Definition; createdAt: string; version: number }
 export type ImportJob = Condition & {
   id: string; dashboardId: string; owner: string; hash: string; status: 'uploaded' | 'validating' | 'ready' | 'invalid' | 'published' | 'failed';
   draftRevision: number; activityRevision: number; warnings: Notice[]; errors: Notice[]; createdAt: string;
   files: Record<string, string>; sources?: Record<string, string>; mappings: Record<string, UploadMapping>; data?: SnapshotData; collection?: CollectionReport[];
+  reusedFiles?: Record<string, string>; baseSnapshotId?: string;
   commitKey?: string; snapshotId?: string; appliedRelease?: string | null; claim?: string; lease?: number;
 }
-export type Proof = { jobId: string; userId: string; dashboardId: string; hash: string; expires: number }
+export type Proof = { jobId: string; userId: string; dashboardId: string; hash: string; expires: number; passwordVersion?: number }
 export const token = () => randomBytes(32).toString('base64url')
 export const hash = (input: string | Uint8Array) => createHash('sha256').update(input).digest('hex')
 export const now = () => new Date().toISOString()
-export const account = ({ hash: _, ...user }: User): Account => user
+export const superadminPolicyKey = (tenant: string) => 'role-policy:' + tenant
+export const superadminPolicy = (db: Records, tenant: string) => db.get<SuperadminPolicy>(superadminPolicyKey(tenant)) ?? defaultSuperadminPolicy
+export function permissions(db: Records, user: User): AccountPermissions {
+  if (user.role === 'developer') return { dashboards: true, users: true, roles: true }
+  if (user.role === 'superadmin') return { ...superadminPolicy(db, user.tenant), roles: false }
+  return { dashboards: user.role === 'admin', users: false, roles: false }
+}
+export function account(db: Records, user: User): Account {
+  const { id, tenant, email, name, role, avatar } = user
+  return { id, tenant, email, name, role, avatar, permissions: permissions(db, user) }
+}
 export function fail(status: number, code: string, message: string, location?: string): never {
   throw new HttpException({ code, message, location, retryable: status === 409 || status === 429 || status >= 500 }, status)
 }

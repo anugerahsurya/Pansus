@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
     <meta name="description" content="Pansus (Pantau Survei dan Sensus) memantau kemajuan kegiatan lapangan BPS Provinsi Sumatera Barat." />
+    <script>
+      if (!location.pathname.startsWith('/render/')) {
+        let mode
+        try { mode = localStorage.getItem('pansus-mode') } catch {}
+        document.documentElement.dataset.mode = mode || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      }
+    </script>
     <link rel="icon" href="/mark.svg" type="image/svg+xml" />
     <title>Pansus · Pantau Survei dan Sensus · BPS Sumatera Barat</title>
   </head>

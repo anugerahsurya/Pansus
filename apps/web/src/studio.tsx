@@ -18,10 +18,10 @@ export default function Studio() {
     catch (error) { setError((error as Error).message) }
   }
   if (user === undefined) return <Loading />
-  if (!user || user.role === 'reader') return <>
+  if (!user || (!user.permissions.dashboards && user.role !== 'operator')) return <>
     <Breadcrumb parts={['Studio pengelola']} /><div className="panel state-panel"><span className="metric-icon"><Lock size={22} /></span><h1>Studio pengelola</h1><p>Masuk dengan akun admin atau operator data untuk mengelola kegiatan.</p><Link className="button primary" to={`/masuk?lanjut=${encodeURIComponent(id ? `/studio/${id}` : '/studio')}`}>Masuk ke studio <ArrowRight size={16} /></Link></div>
   </>
-  return <>{error && <Alert>{error}</Alert>}{id ? <Workspace id={id} key={id} /> : <DashboardList admin={user.role === 'admin'} logout={logout} />}</>
+  return <>{error && <Alert>{error}</Alert>}{id ? <Workspace id={id} key={id} /> : <DashboardList admin={user.permissions.dashboards} logout={logout} />}</>
 }
 
 function DashboardList({ admin, logout }: { admin: boolean; logout: () => void }) {
@@ -29,7 +29,7 @@ function DashboardList({ admin, logout }: { admin: boolean; logout: () => void }
   return <>
     <Breadcrumb parts={['Studio pengelola']} />
     <div className="page-heading"><div><h1>Studio pengelola</h1><p>Kelola draf, sumber data, dan akses laporan satker.</p></div><div className="actions"><button className="button subtle" onClick={logout}><LogOut size={16} /> Keluar</button>{admin && <Link to="/template" className="button primary"><Plus size={17} /> Buat dashboard</Link>}</div></div>
-    {loading && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
+    {loading && !data && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
     {!loading && !error && !data?.length && <div className="panel state-panel"><span className="metric-icon"><ClipboardCheck size={21} /></span><h2>Belum ada dashboard</h2><p>{admin ? 'Salin template PES atau Susenas–Seruti untuk memulai.' : 'Dashboard muncul setelah admin memberi penugasan.'}</p>{admin && <Link to="/template" className="button primary">Pilih template <ArrowRight size={16} /></Link>}</div>}
     {!!data?.length && <div className="panel studio-list">{data.map(item => <Link className="studio-list-item" to={`/studio/${item.id}`} key={item.id}><span className="metric-icon"><ClipboardCheck size={20} /></span><span className="studio-list-name"><b>{item.title}</b><small>{item.activityStatus === 'closed' ? 'Selesai' : 'Berjalan'} · {item.archivedAt ? 'Diarsipkan' : item.activeRelease ? accessLabels[item.visibility] : 'Draf'}</small></span><ArrowRight size={18} /></Link>)}</div>}
   </>
@@ -38,6 +38,7 @@ function DashboardList({ admin, logout }: { admin: boolean; logout: () => void }
 const accessLabels: Record<Visibility, string> = { public: 'Publik', link: 'Tautan rahasia', invite: 'Hanya orang yang diundang' }
 function Workspace({ id }: { id: string }) {
   const [query, setQuery] = useSearchParams()
+  const [editorPending, setEditorPending] = useState(false)
   const { data, error, loading, reload } = useData<DashboardDetail>(`/admin/dashboards/${id}`)
   const tab = query.get('tab') ?? (data?.canManage ? 'editor' : 'data')
   const tabs = data?.canManage ? [ ['editor', 'Editor', Settings], ['data', 'Perbarui data', FileUp], ['preview', 'Pratinjau', Eye], ['access', 'Terbitkan & akses', Globe] ] as const : [['data', 'Perbarui data', FileUp], ['preview', 'Pratinjau', Eye]] as const
@@ -48,8 +49,8 @@ function Workspace({ id }: { id: string }) {
       <div className="page-heading"><div><h1>{data.draft.title}</h1><p>{data.draft.period} · {data.archivedAt ? 'Diarsipkan' : data.activeRelease ? 'Terbit' : 'Draf'}{data.activityStatus === 'closed' && ' · Kegiatan selesai'}</p></div>
         {data.activeRelease && !data.archivedAt && <Link className="button" to={`/d/${data.slug}`}><ExternalLink size={16} /> Buka tautan pembaca</Link>}</div>
       <nav className="workspace-tabs" aria-label="Langkah pengelolaan">{tabs.map(([route, label, Icon]) => <button key={route} aria-current={tab === route ? 'page' : undefined} className={tab === route ? 'selected' : ''} onClick={() => setQuery({ tab: route })}><Icon size={17} />{label}</button>)}</nav>
-      <div hidden={tab !== 'editor'}>{data.canManage && <Editor detail={data} onUpdate={reload} active={tab === 'editor'} />}</div>
-      {tab === 'data' && <UploadPanel detail={data} onUpdate={reload} />}
+      <div hidden={tab !== 'editor'}>{data.canManage && <Editor detail={data} onUpdate={reload} onPendingChange={setEditorPending} active={tab === 'editor'} />}</div>
+      <div hidden={tab !== 'data'}><UploadPanel detail={data} onUpdate={reload} draftPending={editorPending || loading} /></div>
       {tab === 'access' && data.canManage && <Access detail={data} reload={reload} />}
       {tab === 'preview' && <DraftPreview detail={data} />}
     </>}
@@ -59,6 +60,8 @@ function Workspace({ id }: { id: string }) {
 function Access({ detail, reload }: { detail: DashboardDetail; reload: () => void }) {
   const path = `/admin/dashboards/${detail.id}`
   const [visibility, setVisibility] = useState(detail.visibility)
+  const personalRows = detail.draft.datasets.some(dataset => dataset.grain === 'person')
+  const selectedVisibility = personalRows ? 'invite' : visibility
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [working, setWorking] = useState(false)
@@ -85,9 +88,9 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
     {error && <Alert>{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}
     <div className="studio-grid">
       <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon"><Globe size={20} /></span><div><h2>Terbitkan dashboard</h2><p>Pilih siapa yang dapat membuka laporan pada tautan pembaca.</p></div></div>
-        <div className="form-stack"><label>Hak baca<select value={visibility} onChange={event => setVisibility(event.target.value as Visibility)}>{Object.entries(accessLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
-        <p className="muted-text">{visibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : visibility === 'link' ? 'Siapa pun yang menerima tautan rahasia, termasuk penerima terusan, dapat membuka dashboard.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}</p>
-        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(() => api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility }), 'Dashboard terbit.')}><CheckCircle2 size={16} /> {detail.archivedAt ? 'Terbitkan kembali' : detail.activeRelease ? 'Terbitkan perubahan draf' : 'Terbitkan dashboard'}</button>{detail.activeRelease && detail.visibility !== visibility && <button className="button" disabled={working} onClick={() => action(() => api(`${path}/access`, 'PATCH', { visibility }), 'Hak baca diperbarui.')}>Ubah hak baca</button>}</div>
+        <div className="form-stack"><label>Hak baca<select value={selectedVisibility} onChange={event => setVisibility(event.target.value as Visibility)}>{Object.entries(accessLabels).filter(([key]) => !personalRows || key === 'invite').map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
+        <p className="muted-text">{personalRows ? 'Rincian per orang hanya dapat dibuka oleh pengelola dan akun yang diundang.' : selectedVisibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : selectedVisibility === 'link' ? 'Siapa pun yang menerima tautan rahasia, termasuk penerima terusan, dapat membuka dashboard.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}</p>
+        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(() => api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility }), 'Dashboard terbit.')}><CheckCircle2 size={16} /> {detail.archivedAt ? 'Terbitkan kembali' : detail.activeRelease ? 'Terbitkan perubahan draf' : 'Terbitkan dashboard'}</button>{!personalRows && !detail.activePersonal && detail.activeRelease && detail.visibility !== selectedVisibility && <button className="button" disabled={working} onClick={() => action(() => api(`${path}/access`, 'PATCH', { visibility: selectedVisibility }), 'Hak baca diperbarui.')}>Ubah hak baca</button>}</div>
         {(!detail.preview || detail.preview.demo) && <Alert tone="info">Terapkan berkas kegiatan untuk mengganti data contoh sebelum menerbitkan.</Alert>}
         {detail.activeRelease && !detail.archivedAt && <><label>Tautan pembaca<input value={readerLink} readOnly onFocus={event => event.target.select()} /></label><button className="button subtle" onClick={() => setArchiveForm(!archiveForm)}>Arsipkan dashboard</button>
           {archiveForm && <><Alert tone="info">Dashboard sementara disembunyikan dari katalog dan pembaca. Rilis tersimpan di Studio.</Alert><button className="button" disabled={working} onClick={() => action(() => api(`${path}/archive`, 'POST', { expectedRevision: detail.draftRevision }), 'Dashboard diarsipkan.', () => setArchiveForm(false))}>Konfirmasi pengarsipan</button></>}</>}</div>

@@ -1,9 +1,11 @@
-import { Body, Controller, Delete, Get, Inject, Param, Patch, Post, Query, Req, Res, UploadedFiles, UseInterceptors } from '@nestjs/common'
+import { Body, Controller, Delete, Get, HttpException, Inject, Param, Patch, Post, Query, Req, Res, UploadedFiles, UseInterceptors } from '@nestjs/common'
 import { AnyFilesInterceptor } from '@nestjs/platform-express'
 import type { Request, Response } from 'express'
 import type {} from 'multer'
 import { z } from 'zod'
 import { idSchema, visibilitySchema, widgetWidths } from '../../../packages/contracts/index'
+import { csvAnalysisStream, type CsvAnalysisEvent } from '../../../packages/contracts/csv-analysis'
+import { avatarCount, memberRoles } from '../../../packages/contracts/accounts'
 import { aggregate, sortRows } from '../../../packages/metrics/index'
 import { exampleFiles } from '../../../fixtures/synthetic/index'
 import type { InputFile } from '../../../packages/adapters/index'
@@ -29,6 +31,10 @@ function cookieOptions() {
 }
 const revision = z.number().int().nonnegative()
 const password = z.string().min(1).max(200)
+const newPassword = z.string().min(12).max(200)
+const memberRole = z.enum(memberRoles)
+const personName = z.string().trim().min(2).max(100)
+const policy = z.object({ dashboards: z.boolean(), users: z.boolean() })
 const secret = z.string().regex(/^[\w-]{43}$/)
 const reason = z.string().trim().min(3).max(300)
 
@@ -75,6 +81,13 @@ export class ControllerRoutes {
     return { rows: rows.slice(cursor, cursor + 20).map(row => ({ ...row, hasChildren: parents.has(row.code) })), nextCursor: rows.length > cursor + 20 ? cursor + 20 : null, total: rows.length, coverage: totals, deltaReason: report.baselineReason }
   }
   @Get('auth/me') me(@Req() req: Request) { return this.app.me(credentials(req)) }
+  @Patch('auth/profile') profile(@Req() req: Request, @Body() body: unknown) {
+    return this.app.updateProfile(credentials(req), payload(z.object({ name: personName, avatar: z.number().int().min(1).max(avatarCount).nullable() }), body))
+  }
+  @Patch('auth/password') password(@Req() req: Request, @Body() body: unknown) {
+    const input = payload(z.object({ currentPassword: password, newPassword }), body)
+    return this.app.changePassword(credentials(req), input.currentPassword, input.newPassword, req.ip ?? 'local')
+  }
   @Post('auth/login') async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const input = payload(z.object({ email: z.email().max(100).transform(text => text.toLowerCase()), password }), body)
     const { session, user } = await this.app.login(input.email, input.password, req.ip ?? 'local')
@@ -97,11 +110,26 @@ export class ControllerRoutes {
     return { slug: result.slug }
   }
   @Get('admin/dashboards') studio(@Req() req: Request) { return this.app.studio(credentials(req)) }
+  @Get('admin/members') members(@Req() req: Request) { return this.app.members(credentials(req)) }
+  @Post('admin/members') addMember(@Req() req: Request, @Body() body: unknown) {
+    return this.app.createMember(credentials(req), payload(z.object({ name: personName, email: z.email().max(100).transform(email => email.toLowerCase()), role: memberRole, password: newPassword }), body))
+  }
+  @Patch('admin/members/:id/role') memberRole(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const input = payload(z.object({ role: memberRole, expectedRole: memberRole }), body)
+    return this.app.changeRole(credentials(req), id, input.role, input.expectedRole)
+  }
+  @Patch('admin/roles/superadmin') configureSuperadmin(@Req() req: Request, @Body() body: unknown) {
+    const input = payload(z.object({ policy, expected: policy }), body)
+    return this.app.updateSuperadminPolicy(credentials(req), input.policy, input.expected)
+  }
   @Post('admin/dashboards') create(@Req() req: Request, @Body() body: unknown) {
     const input = payload(z.object({ template: z.enum(['pes', 'susenas', 'custom']), title: z.string().trim().min(3).max(100).optional() }), body)
     return this.app.create(credentials(req), input.template, input.title)
   }
   @Get('admin/dashboards/:id') detail(@Req() req: Request, @Param('id') id: string) { return this.app.detail(credentials(req), id) }
+  @Post('admin/dashboards/:id/ai-status') checkAi(@Req() req: Request, @Param('id') id: string) {
+    return this.app.aiStatus(credentials(req), id)
+  }
   @Get('admin/dashboards/:id/preview') async draftPreview(@Req() req: Request, @Param('id') id: string) {
     const { preview, draftRevision } = await this.app.detail(credentials(req), id)
     return { preview, draftRevision }
@@ -110,9 +138,9 @@ export class ControllerRoutes {
     return this.app.saveDraft(credentials(req), id, payload(z.object({ definition: z.unknown(), expectedRevision: revision, mappings: mappingsSchema.optional() }), body))
   }
   @Post('admin/dashboards/:id/imports')
-  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 8, fields: 3, fieldSize: 25_000, parts: 11 } }))
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 8, fields: 4, fieldSize: 25_000, parts: 12 } }))
   import(@Req() req: Request, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
-    const { date, time, mappings: raw } = payload(uploadSchema, body)
+    const { date, time, mappings: raw, reuseSnapshot } = payload(uploadSchema, body)
     let mappings: unknown
     try { if (raw !== undefined) mappings = JSON.parse(raw) } catch { fail(422, 'INVALID_MAPPING', 'Format pemetaan belum valid.') }
     const mapped = Object.create(null) as Record<string, InputFile>
@@ -121,7 +149,7 @@ export class ControllerRoutes {
       if (Object.hasOwn(mapped, key)) fail(422, 'DUPLICATE_SLOT', 'Pilih satu berkas per slot.')
       mapped[key] = { name: file.originalname.slice(0, 140), bytes: file.buffer }
     }
-    return this.app.prepare(credentials(req), id, { date, time }, mapped, mappings === undefined ? undefined : payload(mappingsSchema, mappings))
+    return this.app.prepare(credentials(req), id, { date, time }, mapped, mappings === undefined ? undefined : payload(mappingsSchema, mappings), reuseSnapshot)
   }
   @Get('admin/imports/:id/preview') preview(@Req() req: Request, @Param('id') id: string) { return this.app.preview(credentials(req), id) }
   @Get('admin/imports/:id/errors') async importErrors(@Req() req: Request, @Res() res: Response, @Param('id') id: string) {
@@ -170,15 +198,39 @@ export class ControllerRoutes {
     return this.app.formula(credentials(req), id, input.dataset, input.field, input.formula)
   }
   @Post('admin/dashboards/:id/ai-drafts')
-  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 3, fieldSize: 100, parts: 5 } }))
-  ai(@Req() req: Request, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 4, fieldSize: 120, parts: 6 } }))
+  async ai(@Req() req: Request, @Res() res: Response, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
     const input = payload(z.object({
       slot: idSchema, headerRow: z.coerce.number().int().min(1).max(10_000).optional(),
       stopRow: z.coerce.number().int().min(2).max(10_100).optional(),
+      identity: z.string().trim().min(1).max(120).optional(),
     }), body)
     const file = files?.[0]
     if (file?.fieldname !== 'csv') fail(422, 'AI_CSV_REQUIRED', 'Pilih satu CSV untuk dianalisis.')
-    return this.app.aiDraft(credentials(req), id, { name: file.originalname.slice(0, 140), bytes: file.buffer }, input)
+    const source = { name: file.originalname.slice(0, 140), bytes: file.buffer }
+    const user = credentials(req)
+    const stream = req.get('accept') === csvAnalysisStream
+    const emit = (event: CsvAnalysisEvent<Awaited<ReturnType<Monitoring['aiDraft']>>>) => {
+      if (res.destroyed) return
+      if (!res.headersSent) res.status(200).type(csvAnalysisStream).flushHeaders()
+      res.write(JSON.stringify(event) + '\n')
+    }
+    try {
+      const data = await this.app.aiDraft(user, id, source, input, stream ? stage => emit({ type: 'progress', stage }) : undefined)
+      if (!stream) { res.status(201).json(data); return }
+      emit({ type: 'result', data })
+    } catch (error) {
+      if (!res.headersSent) throw error
+      const response = error instanceof HttpException ? error.getResponse() : undefined
+      const message = response && typeof response === 'object' && 'message' in response ? response.message : undefined
+      const code = response && typeof response === 'object' && 'code' in response ? response.code : undefined
+      emit({
+        type: 'error', status: error instanceof HttpException ? error.getStatus() : 500,
+        message: typeof message === 'string' ? message : 'Analisis CSV belum selesai. Coba lagi.',
+        code: typeof code === 'string' ? code : undefined,
+      })
+    }
+    res.end()
   }
   @Post('dashboards/:id/exports') requestExport(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     const input = payload(z.object({ releaseId: z.uuid(), sort: z.record(idSchema, z.object({ field: z.string().max(40), reverse: z.boolean() })).optional(), includeDetail: z.boolean().default(false) }), body)

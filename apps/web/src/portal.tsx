@@ -89,7 +89,7 @@ export function Catalog() {
     <Breadcrumb parts={[{ label: 'Portal pembaca', to: '/' }, 'Katalog kegiatan']} />
     <div className="page-heading"><div><h1>Katalog kegiatan</h1><p>Laporan kegiatan yang diterbitkan untuk publik.</p></div></div>
     <div className="catalog-tools"><label className="search"><Search size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Cari nama kegiatan, satker, atau periode…" aria-label="Cari kegiatan" /></label><select aria-label="Status kegiatan" value={status} onChange={event => setStatus(event.target.value)}><option value="all">Semua status</option><option value="active">Berjalan</option><option value="closed">Selesai</option></select></div>
-    {loading && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
+    {loading && !data && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
     {!loading && !error && !items.length && <div className="panel state-panel">Tidak ada kegiatan yang cocok.</div>}
     <div className="catalog-grid">{items.map(item => <article className="panel catalog-card" key={item.slug}>
       <div className={`catalog-banner theme-${item.theme}`}><BarChart3 size={35} /><span className="catalog-badge">{item.demo ? 'Data sintetis' : item.activityStatus === 'active' ? 'Berjalan' : 'Selesai'}</span></div>
@@ -114,8 +114,8 @@ export function Templates() {
   }
   return <>
     <Breadcrumb parts={[{ label: 'Portal pembaca', to: '/' }, 'Galeri template']} />
-    <div className="page-heading"><div><h1>Galeri template</h1><p>Pilih contoh sesuai sumber data atau susun dashboard wilayah sendiri.</p></div><button className="button" aria-pressed={mobile} onClick={() => setMobile(!mobile)}>{mobile ? <LayoutTemplate size={17} /> : <Smartphone size={17} />}{mobile ? 'Pratinjau desktop' : 'Pratinjau ponsel'}</button></div>
-    {loading && <Loading />}{(error || failed) && <Alert>{error || failed}</Alert>}
+    <div className="page-heading"><div><h1>Galeri template</h1><p>Pilih contoh sesuai sumber data atau susun dashboard sendiri.</p></div><button className="button" aria-pressed={mobile} onClick={() => setMobile(!mobile)}>{mobile ? <LayoutTemplate size={17} /> : <Smartphone size={17} />}{mobile ? 'Pratinjau desktop' : 'Pratinjau ponsel'}</button></div>
+    {loading && !data && <Loading />}{(error || failed) && <Alert>{error || failed}</Alert>}
     <div className="catalog-grid templates-grid">{data?.map(item => <article className="panel catalog-card" key={item.id}>
       <div className={`template-banner theme-${item.definition.theme}`}><div className={'mini-dashboard' + (mobile ? ' mini-mobile' : '')} aria-hidden="true"><div /><div className="mini-metrics"><i /><i /><i /></div><div className="mini-chart"><i /><i /><i /></div></div></div>
       <div className="catalog-content"><h2>{item.name}</h2><p>{item.description}</p>
@@ -140,7 +140,8 @@ export function Login() {
       const user = await api<Account>('/auth/login', 'POST', { email: fields.get('email'), password: fields.get('password') })
       setUser(user)
       const to = params.get('lanjut')
-      navigate(to && /^\/(?!\/)[a-z][a-z0-9/-]*$/i.test(to) ? to : user.role === 'reader' ? '/katalog' : '/studio', { replace: true })
+      const home = user.permissions.dashboards || user.role === 'operator' ? '/studio' : user.permissions.users ? '/pengguna' : '/katalog'
+      navigate(to && /^\/(?!\/)[a-z][a-z0-9/-]*$/i.test(to) ? to : home, { replace: true })
     } catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }

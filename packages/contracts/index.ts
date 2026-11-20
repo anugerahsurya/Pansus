@@ -16,11 +16,12 @@ const fieldSchema = z.object({
   formula: z.string().trim().min(1).max(256).optional(),
 })
 const datasetSchema = z.object({
-  id: idSchema, label: z.string().trim().min(1).max(100), grain: z.literal('district').default('district'),
+  id: idSchema, label: z.string().trim().min(1).max(100), grain: z.enum(['district', 'person']).default('district'),
   fields: z.array(fieldSchema).min(1).max(50), publicDetail: z.boolean().optional(),
 })
 const widgetType = z.enum(['progress', 'kpi', 'bars', 'donut', 'table', 'link', 'schedule'])
 export const widgetWidths = ['quarter', 'third', 'half', 'two-thirds', 'full'] as const
+export const dashboardThemes = ['teal', 'blue', 'plum', 'economy', 'slate'] as const
 const widgetSchema = z.object({
   id: idSchema, title: z.string().trim().min(1).max(120), version: z.literal(1).default(1),
   width: z.enum(widgetWidths).default('half'), type: widgetType,
@@ -28,12 +29,13 @@ const widgetSchema = z.object({
   target: idSchema.optional(), description: z.string().max(300).optional(),
   url: z.url({ protocol: /^https?$/ }).max(500).optional(),
   provinceFooter: z.object({ enabled: z.boolean(), rules: z.record(idSchema, ruleSchema) }).optional(),
+  progressGroup: z.object({ field: idSchema, target: idSchema.optional() }).optional(),
 })
 export const definitionSchema = z.object({
   schemaVersion: z.literal(1), title: z.string().trim().min(3).max(100),
   description: z.string().trim().max(300), satker: z.string().trim().min(2).max(100),
   period: z.string().trim().min(1).max(60), timezone: z.literal('Asia/Jakarta'),
-  theme: z.enum(['teal', 'blue', 'plum']),
+  theme: z.enum(dashboardThemes),
   datasets: z.array(datasetSchema).min(1).max(8),
   widgets: z.array(widgetSchema).max(24),
 }).superRefine((definition, ctx) => {
@@ -60,6 +62,14 @@ export const definitionSchema = z.object({
     if (widget.type !== 'table' && ids.some(id => fields.get(id)?.unit === 'category')) issue(`Pilih indikator numerik untuk ${widget.title}.`)
     if (widget.type === 'donut' && ids.some(id => fields.get(id)?.unit !== 'count')) issue(`Pilih kategori hitungan yang saling lepas untuk ${widget.title}.`)
     if (widget.type === 'bars' && ((widget.fields?.length ?? 0) > 3 || widget.fields?.some(id => fields.get(id)?.unit !== fields.get(widget.field ?? '')?.unit))) issue(`Pilih maksimal empat seri dengan satuan yang sama untuk ${widget.title}.`)
+    if (widget.progressGroup) {
+      const { field, target } = widget.progressGroup
+      const progress = fields.get(field)
+      const denominator = target ? fields.get(target) : undefined
+      if (widget.type !== 'table' || dataset.grain !== 'person' || !progress?.public || (target
+        ? !denominator?.public || field === target || progress.unit !== denominator.unit || !['number', 'count'].includes(progress.unit)
+        : progress.unit !== 'percent')) issue(`Pilih kolom persentase atau pasangan aktual dan target yang sesuai untuk ${widget.title}.`)
+    }
     for (const [id, rule] of Object.entries(widget.provinceFooter?.rules ?? {})) {
       const field = fields.get(id)
       if (!field?.public || (field.unit === 'category' && !['none', 'mode', 'count', 'reportedValue'].includes(rule.op))) issue(`Aturan ringkasan ${id} tidak sesuai dengan tipe kolom.`)
