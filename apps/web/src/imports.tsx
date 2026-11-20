@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { FileSpreadsheet, Info, Plus, Settings2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import type { Dataset, UploadMapping } from '../../../packages/contracts/index'
-import type { CsvAnalysisStage, GeminiStatus } from '../../../packages/contracts/csv-analysis'
+import { analysisFormat, type CsvAnalysisStage, type GeminiStatus } from '../../../packages/contracts/csv-analysis'
 import { ApiError, api, conditionDate, currentWib, fmt, requestCsvAnalysis, type CsvSuggestion, type DashboardDetail, type ImportJob } from './api'
 import { Alert } from './common'
 
@@ -10,9 +10,9 @@ const tabularFormats = '.csv,.tsv,.xlsx,.xls,.json'
 const csvUnits = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Kategori' }
 const geminiLabels: Record<GeminiStatus, string> = { unconfigured: 'Belum dikonfigurasi', configured: 'Belum dicek', ready: 'Terhubung', unavailable: 'Koneksi bermasalah' }
 const analysisStages: Record<CsvAnalysisStage, { percent: number; message: string }> = {
-  reading: { percent: 20, message: 'Membaca struktur CSV…' },
+  reading: { percent: 20, message: 'Membaca struktur berkas…' },
   mapping: { percent: 45, message: 'Menunggu usulan pemetaan dari Gemini…' },
-  validating: { percent: 85, message: 'Memeriksa usulan dengan data CSV…' },
+  validating: { percent: 85, message: 'Memeriksa usulan dengan data sumber…' },
 }
 type CsvProgress = { label: string; percent: number; message: string }
 
@@ -27,12 +27,12 @@ function CsvAnalysisDialog({ progress, open, onClose }: { progress: CsvProgress;
   }, [open])
 
   return <dialog ref={element} className="csv-progress-dialog" aria-labelledby={heading} onClose={onClose}>
-    <h2 id={heading}>Analisis CSV {progress.label}</h2>
+    <h2 id={heading}>{progress.label}</h2>
     <div className="csv-progress-status">
       <p id={stage} role="status">{progress.message}</p>
       <strong aria-hidden="true">{progress.percent}%</strong>
     </div>
-    <progress value={progress.percent} max={100} aria-label="Progres analisis CSV" aria-describedby={stage} />
+    <progress value={progress.percent} max={100} aria-label="Progres analisis berkas" aria-describedby={stage} />
     <div className="actions">
       <button type="button" className={progress.percent === 100 ? 'button primary' : 'button'} onClick={() => element.current?.close()}>
         {progress.percent === 100 ? 'Lihat usulan' : 'Sembunyikan'}
@@ -76,13 +76,16 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const job = selectedJob?.id === jobId ? selectedJob : undefined
   const processing = job?.status === 'uploaded' || job?.status === 'validating'
   const suggesting = Boolean(analysis && analysis.percent < 100)
-  const aiSlots = !auto && !workbook ? slots.filter(slot => slot.id !== 'sls_detail' && /\.csv$/i.test(files[slot.id]?.name ?? '')) : []
+  const aiSlots = auto || workbook ? [] : slots.flatMap(slot => {
+    const format = slot.id === 'sls_detail' ? undefined : analysisFormat(files[slot.id]?.name ?? '')
+    return format ? [{ ...slot, format }] : []
+  })
   const health = detail.aiAvailable ? aiStatus ?? (detail.aiHealth === 'unconfigured' ? undefined : detail.aiHealth) ?? 'configured' : 'unconfigured'
   const aiEnabled = detail.aiAvailable && health !== 'unconfigured'
   const analysisHint = !aiEnabled ? 'Gemini belum tersedia di server ini. Pemetaan manual tetap bisa digunakan.' :
-    auto || workbook ? 'Untuk menganalisis CSV, pilih berkas per dataset.' :
+    auto || workbook ? 'Untuk menganalisis CSV atau Excel dengan Gemini, pilih satu berkas per dataset.' :
     aiSlots.length ? 'Gemini menerima struktur kolom yang disaring dan tipe nilainya. Isi baris dan angka diproses di Pansus.' :
-    'Pilih berkas CSV pada salah satu sumber untuk memulai analisis.'
+    'Pilih berkas CSV atau Excel (XLSX/XLS) pada salah satu sumber untuk memulai analisis.'
   const savedInputs = detail.savedInputs
   const matchingInputs = savedInputs?.date === date && savedInputs.time === time ? savedInputs : undefined
   const updatedFiles = slots.some(slot => files[slot.id])
@@ -168,15 +171,18 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
     finally { setCheckingAi(false) }
   }
 
-  async function analyzeCsv(slot: string) {
+  async function analyzeFile(slot: string) {
     const file = files[slot]
     if (!file || suggesting || !aiEnabled) return
-    const label = slots.find(item => item.id === slot)?.label ?? slot
-    setAnalysis({ label, percent: 0, message: 'Mengirim CSV untuk dianalisis…' })
+    const source = aiSlots.find(item => item.id === slot)
+    if (!source) return
+    const label = `Analisis ${source.format} ${source.label}`
+    setAnalysis({ label, percent: 0, message: 'Mengirim berkas untuk dianalisis…' })
     setShowAnalysis(true); setAiError(''); setSuggestion(undefined); setApplied(undefined)
     const body = new FormData()
-    body.append('csv', file)
+    body.append('file', file)
     body.append('slot', slot)
+    if (source.format === 'Excel' && mappings[slot]?.sheet) body.append('sheet', mappings[slot].sheet)
     if (mappings[slot]?.headerRow) body.append('headerRow', String(mappings[slot].headerRow))
     if (mappings[slot]?.stopRow) body.append('stopRow', String(mappings[slot].stopRow))
     const dataset = detail.draft.datasets.find(item => item.id === slot)
@@ -193,7 +199,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       const error = failure as Error
       if (error instanceof ApiError && error.code === 'AI_DISABLED') setAiStatus('unconfigured')
       else if (error.name === 'TimeoutError' || error instanceof ApiError && error.status >= 500) setAiStatus('unavailable')
-      setAiError(error.name === 'TimeoutError' ? 'Analisis CSV terlalu lama. Coba lagi.' : error.message)
+      setAiError(error.name === 'TimeoutError' ? 'Analisis berkas terlalu lama. Coba lagi.' : error.message)
       setShowAnalysis(false)
       setAnalysis(undefined)
       requestAnimationFrame(() => reviewRef.current?.focus())
@@ -287,8 +293,8 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
             <p>{analysisHint}</p>
             {health === 'unavailable' && <p>Coba cek koneksi kembali atau lanjutkan dengan pemetaan manual.</p>}
             <div className="actions">
-              {aiSlots.length ? aiSlots.map(slot => <button className="button" type="button" key={slot.id} onClick={() => void analyzeCsv(slot.id)} disabled={!aiEnabled || processing || draftPending}>Analisis CSV {slot.label}</button>) :
-                <button className="button" type="button" disabled>Analisis CSV</button>}
+              {aiSlots.length ? aiSlots.map(slot => <button className="button" type="button" key={slot.id} onClick={() => void analyzeFile(slot.id)} disabled={!aiEnabled || processing || draftPending}>Analisis {slot.format} {slot.label}</button>) :
+                <button className="button" type="button" disabled>Analisis berkas</button>}
               {detail.aiAvailable && (auto || workbook) && <button className="text-button" type="button" onClick={() => { setAuto(false); setWorkbook(false); setSuggestion(undefined) }}>Pilih berkas per dataset</button>}
               <button className="text-button" type="button" onClick={() => void checkAi()} disabled={checkingAi}>Cek koneksi Gemini</button>
             </div>
@@ -344,7 +350,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
         {detail.canManage && <div className="actions"><button className="text-button" type="button" onClick={() => setQuery({ tab: 'editor', section: 'fields', source: applied.slot })}>Atur kolom sumber</button></div>}
       </Alert>}
       {suggestion && <div className="form-stack">
-        <p>{suggestion.result.model} · {suggestion.result.rows} {suggestion.result.grain === 'person' ? 'petugas' : 'wilayah'} diperiksa · Baris judul {suggestion.result.mapping.headerRow}</p>
+        <p>{suggestion.result.model} · {suggestion.result.rows} {suggestion.result.grain === 'person' ? 'petugas' : 'wilayah'} diperiksa{suggestion.result.mapping.sheet && ` · Lembar ${suggestion.result.mapping.sheet}`} · Baris judul {suggestion.result.mapping.headerRow}</p>
         <dl><div><dt>{suggestion.result.grain === 'person' ? 'Identitas petugas' : 'Wilayah'}</dt><dd>{suggestion.result.mapping.region}</dd></div>
           {suggestion.result.fields.map(field => <div key={field.id}><dt>{field.label}</dt><dd>{suggestion.result.mapping.columns?.[field.id]}
             {suggestion.result.definition && <small className="suggestion-unit">{csvUnits[field.unit]}{field.scale === 'fraction' ? ' (0–1)' : field.scale === 'percentage' ? ' (0–100)' : ''}{!field.public ? ' · Privat' : ''}</small>}

@@ -22,12 +22,12 @@ export async function requestCsvAnalysis(dashboard: string, body: FormData, onPr
   })
   if (!response.ok || !response.headers.get('content-type')?.includes(csvAnalysisStream)) {
     const data = await response.json().catch(() => null)
-    if (!response.ok || !data) throw new ApiError(data?.message ?? 'Analisis CSV belum dapat dimulai.', response.status, data?.code)
+    if (!response.ok || !data) throw new ApiError(data?.message ?? 'Analisis berkas belum dapat dimulai.', response.status, data?.code)
     return data as CsvSuggestion
   }
 
   const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader()
-  if (!reader) throw new Error('Status analisis CSV tidak dapat dibaca.')
+  if (!reader) throw new Error('Status analisis berkas tidak dapat dibaca.')
   let pending = ''
   try {
     while (true) {
@@ -43,7 +43,7 @@ export async function requestCsvAnalysis(dashboard: string, body: FormData, onPr
         if (event.type === 'result') return event.data
       }
     }
-    throw new Error('Koneksi terputus sebelum analisis CSV selesai. Coba lagi.')
+    throw new Error('Koneksi terputus sebelum analisis berkas selesai. Coba lagi.')
   } finally {
     await reader.cancel().catch(() => {})
     reader.releaseLock()

@@ -69,7 +69,7 @@ Ekspor per penugasan, PDF, dan tangkapan layar memerlukan struktur sumber tersen
 
 ### Usulan konfigurasi dengan Gemini
 
-Isi `GEMINI_API_KEY` pada lingkungan API. Di **Studio → Perbarui data**, panel **Bantuan Gemini** menunjukkan cara mengaktifkan **Analisis CSV**. Jika memakai deteksi otomatis PES atau satu workbook Susenas–Seruti, pilih **Pilih berkas per dataset**, lalu unggah CSV pada sumber yang ingin dianalisis. Template baku mendapat saran pemetaan. Sumber yang belum dikonfigurasi pada dashboard **Susun sendiri** juga mendapat saran tipe kolom dan komponen.
+Isi `GEMINI_API_KEY` pada lingkungan API. Di **Studio → Perbarui data**, unggah CSV atau Excel (XLSX/XLS) untuk dianalisis dengan **Bantuan Gemini**. Jika memakai deteksi otomatis PES atau satu workbook Susenas–Seruti, gunakan **Pilih berkas per dataset**. Jika beberapa lembar Excel cocok, isi **Nama lembar** di **Pemetaan berkas**. Template baku mendapat saran pemetaan. Sumber yang belum dikonfigurasi pada dashboard **Susun sendiri** juga mendapat saran tipe kolom dan komponen.
 
 Untuk progres petugas, gunakan satu baris per orang dan satu kolom identitas unik seperti `nama petugas` atau `kode petugas`. Sertakan kolom `Progres (%)` atau pasangan aktual dan target. Pada dashboard **Susun sendiri**, Gemini dapat menyarankan tabel dengan kelompok **100% atau lebih**, **50%–<100%**, **Di bawah 50%**, dan **Belum ada angka**. Susunan manual tersedia melalui **Editor → Kolom data** dan **Komponen**. Rilis yang memuat rincian per orang menggunakan hak baca undangan.
 

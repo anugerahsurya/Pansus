@@ -198,15 +198,16 @@ export class ControllerRoutes {
     return this.app.formula(credentials(req), id, input.dataset, input.field, input.formula)
   }
   @Post('admin/dashboards/:id/ai-drafts')
-  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 4, fieldSize: 120, parts: 6 } }))
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 5, fieldSize: 120, parts: 7 } }))
   async ai(@Req() req: Request, @Res() res: Response, @Param('id') id: string, @Body() body: unknown, @UploadedFiles() files: Express.Multer.File[]) {
     const input = payload(z.object({
       slot: idSchema, headerRow: z.coerce.number().int().min(1).max(10_000).optional(),
       stopRow: z.coerce.number().int().min(2).max(10_100).optional(),
       identity: z.string().trim().min(1).max(120).optional(),
+      sheet: z.string().min(1).max(80).optional(),
     }), body)
     const file = files?.[0]
-    if (file?.fieldname !== 'csv') fail(422, 'AI_CSV_REQUIRED', 'Pilih satu CSV untuk dianalisis.')
+    if (!file || (file.fieldname !== 'file' && file.fieldname !== 'csv')) fail(422, 'AI_FILE_REQUIRED', 'Pilih satu berkas CSV atau Excel untuk dianalisis.')
     const source = { name: file.originalname.slice(0, 140), bytes: file.buffer }
     const user = credentials(req)
     const stream = req.get('accept') === csvAnalysisStream
@@ -226,7 +227,7 @@ export class ControllerRoutes {
       const code = response && typeof response === 'object' && 'code' in response ? response.code : undefined
       emit({
         type: 'error', status: error instanceof HttpException ? error.getStatus() : 500,
-        message: typeof message === 'string' ? message : 'Analisis CSV belum selesai. Coba lagi.',
+        message: typeof message === 'string' ? message : 'Analisis berkas belum selesai. Coba lagi.',
         code: typeof code === 'string' ? code : undefined,
       })
     }

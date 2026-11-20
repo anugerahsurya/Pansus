@@ -1,12 +1,48 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import * as xlsx from 'xlsx'
 import { suggestCsv } from '../apps/api/src/gemini'
+import { readDataset } from '../packages/adapters/index'
 import { exampleFiles } from '../fixtures/synthetic/index'
 import { templateDefinition } from '../templates/index'
 
 function response(output: object) {
   return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(output) }] } }] })
 }
+
+test('Gemini menganalisis lembar XLSX dan XLS dengan persen Excel yang tersimpan sebagai pecahan', async () => {
+  process.env.GEMINI_API_KEY = 'uji-unit'
+  const definition = templateDefinition('custom')
+  const book = xlsx.utils.book_new()
+  const sheet = xlsx.utils.aoa_to_sheet([
+    ['Rekap Petugas'],
+    ['Nama Petugas', 'Progres'],
+    ['Petugas Uji Satu', 1],
+    ['Petugas Uji Dua', .5],
+    ['Petugas Uji Tiga', .49],
+  ])
+  for (const ref of ['B3', 'B4', 'B5']) sheet[ref].z = '0%'
+  xlsx.utils.book_append_sheet(book, xlsx.utils.aoa_to_sheet([['Catatan penggunaan']]), 'Panduan')
+  xlsx.utils.book_append_sheet(book, sheet, 'Progres Petugas')
+
+  for (const bookType of ['xlsx', 'xls'] as const) {
+    const file = { name: `uji.${bookType}`, bytes: new Uint8Array(xlsx.write(book, { type: 'array', bookType })) }
+    const suggestion = await suggestCsv({
+      file, definition, dataset: definition.datasets[0], template: 'custom', design: true, expectedRevision: 1,
+    }, async (_url, request) => {
+      assert.doesNotMatch(String(request?.body), /Petugas Uji|Progres Petugas|Nama Petugas|49%/)
+      return response({ region: 0, fields: [{ column: 1, unit: 'count' }], progress: [] })
+    })
+    assert.equal(suggestion.mapping.sheet, 'Progres Petugas')
+    assert.equal(suggestion.mapping.headerRow, 2)
+    assert.equal(suggestion.definition?.widgets[0].progressGroup?.field, 'kolom_2')
+    const dataset = suggestion.definition!.datasets[0]
+    assert.equal(dataset.fields[0].scale, 'fraction')
+    assert.deepEqual(readDataset(file, dataset, suggestion.mapping, false).rows.map(row => row.values.kolom_2), [1, .5, .49])
+    dataset.fields[0].scale = 'percentage'
+    assert.deepEqual(readDataset(file, dataset, suggestion.mapping, false).rows.map(row => row.values.kolom_2), [1, .5, .49])
+  }
+})
 
 test('Gemini melewati kuota dan menolak usulan yang menukar status BPS', async () => {
   process.env.GEMINI_API_KEY = 'uji-unit'

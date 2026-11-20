@@ -2,6 +2,7 @@ import { parse } from 'csv-parse/sync'
 import { unzipSync } from 'fflate'
 import * as xlsx from 'xlsx'
 import { dateSchema, timeSchema, type CollectionReport, type DataRow, type Dataset, type DatasetData, type Field, type Notice, type SnapshotData, type TemplateId, type UploadMapping, type Values } from '../contracts/index'
+import { analysisFormat } from '../contracts/csv-analysis'
 import { applyFormulas } from '../metrics/index'
 import { findRegion, pesRegions, sumbar } from '../../templates/regions'
 
@@ -18,7 +19,7 @@ const normalize = (value: unknown) => String(value ?? '').trim().toLowerCase().r
 const statusFields = ['open', 'draft', 'submitted', 'completed', 'rejected', 'revoked']
 const num = (value: unknown) => typeof value === 'number' ? value : 0
 const own = (object: object, key: string) => Object.hasOwn(object, key)
-type Source = { headers: string[]; rows: { cells: unknown[]; location: string }[]; headerRow?: number }
+type Source = { headers: string[]; rows: { cells: unknown[]; location: string; percentColumns?: Set<number> }[]; headerRow?: number; sheet?: string }
 
 export class ImportError extends Error {
   constructor(public readonly notice: Notice) { super(notice.message) }
@@ -42,7 +43,7 @@ function workbook(file: InputFile) {
         return false
       } })
     }
-    return xlsx.read(file.bytes, { type: 'array', sheetRows: MAX_ROWS + 100, cellFormula: true, cellStyles: false, cellHTML: false })
+    return xlsx.read(file.bytes, { type: 'array', sheetRows: MAX_ROWS + 100, cellFormula: true, cellNF: true, cellStyles: false, cellHTML: false })
   } catch (error) {
     if (error instanceof ImportError) throw error
     invalid('INVALID_WORKBOOK', 'Berkas Excel tidak dapat dibaca. Jika terenkripsi, simpan salinan sebagai XLSX atau CSV.', file.name)
@@ -51,6 +52,10 @@ function workbook(file: InputFile) {
 
 function cell(sheet: xlsx.WorkSheet, row: number, column: number, formatted = false) {
   const item = sheet[xlsx.utils.encode_cell({ r: row, c: column })]
+  return cellValue(item, formatted)
+}
+
+function cellValue(item: xlsx.CellObject | undefined, formatted: boolean) {
   if (!item) return null
   if (item.t === 'e' || (item.f && item.v === undefined)) return { excelError: true }
   if (formatted && typeof item.v === 'number' && /^0\d+$/.test(item.w ?? '')) return item.w
@@ -73,7 +78,7 @@ function readExcel(file: InputFile, mapping: UploadMapping, matches?: HeaderMatc
     }
     return []
   })
-  if (candidates.length > 1) invalid('AMBIGUOUS_SHEET', 'Beberapa lembar cocok. Pilih nama lembar pada pemetaan lanjutan.', file.name)
+  if (candidates.length > 1) invalid('AMBIGUOUS_SHEET', 'Beberapa lembar cocok. Isi Nama lembar di Pemetaan berkas.', file.name)
   const name = mapping.sheet || candidates[0]?.name || book.SheetNames[0]
   const sheet = book.Sheets[name]
   if (!sheet?.['!ref']) invalid('SHEET_MISSING', 'Lembar yang dipilih kosong atau tidak tersedia.', file.name)
@@ -84,10 +89,17 @@ function readExcel(file: InputFile, mapping: UploadMapping, matches?: HeaderMatc
   if (range.e.c >= MAX_COLUMNS || (mapping.stopRow ?? fullEnd + 1) - header > MAX_ROWS + 1 || header >= end) invalid('INVALID_RANGE', 'Pilih judul dan rentang hingga 10.000 baris dan 100 kolom.', name)
   const cols = Array.from({ length: range.e.c + 1 }, (_, i) => i)
   return {
+    sheet: name, headerRow: header + 1,
     headers: cols.map(column => normalize(cell(sheet, header, column))),
     rows: Array.from({ length: end - header }, (_, i) => {
       const r = header + i + 1
-      return { cells: cols.map(column => cell(sheet, r, column, true)), location: `${name}, baris ${r + 1}` }
+      const percentColumns = new Set<number>()
+      const cells = cols.map(column => {
+        const item = sheet[xlsx.utils.encode_cell({ r, c: column })]
+        if (item?.t === 'n' && /\d\s*%/.test(item.w ?? '') && /%/.test((item.z ?? '').replace(/"[^"]*"|\\./g, ''))) percentColumns.add(column)
+        return cellValue(item, true)
+      })
+      return { cells, percentColumns, location: `${name}, baris ${r + 1}` }
     }),
   }
 }
@@ -151,7 +163,7 @@ function numericInput(text: string) {
   return /^-?\d+(?:\.\d+)?$/.test(clean) ? Number(clean) : NaN
 }
 
-function value(input: unknown, field: Field, location: string, blankZero: boolean) {
+function value(input: unknown, field: Field, location: string, blankZero: boolean, excelPercent = false) {
   if (input == null || input === '') {
     if (blankZero) return 0
     if (!field.nullable) invalid('VALUE_REQUIRED', `Isi kolom ${field.label}.`, location)
@@ -160,16 +172,17 @@ function value(input: unknown, field: Field, location: string, blankZero: boolea
   if (typeof input !== 'string' && typeof input !== 'number') invalid('INVALID_CELL', `Baca ulang kolom ${field.label}; sel harus berisi nilai atau rumus dengan hasil tersimpan.`, location)
   if (field.unit === 'category') return String(input).trim().slice(0, 250)
   const raw = String(input).trim()
-  const text = field.unit === 'percent' && field.scale !== 'fraction' ? raw.replace(/\s*%$/, '') : raw
+  const percentText = field.unit === 'percent' && raw.endsWith('%')
+  const text = percentText ? raw.replace(/\s*%$/, '') : raw
   const result = numericInput(text)
   if (Number.isNaN(result)) invalid('INVALID_NUMBER', `Kolom ${field.label} harus berisi angka.`, location)
   if (!Number.isFinite(result) || Math.abs(result) > 1e11 || (field.unit === 'count' && (!Number.isSafeInteger(result) || result < 0))) invalid('INVALID_NUMBER', `Nilai ${field.label} di luar rentang yang didukung.`, location)
-  return field.unit === 'percent' && field.scale !== 'fraction' ? result / 100 : result
+  return field.unit === 'percent' && !excelPercent && (percentText || field.scale !== 'fraction') ? result / 100 : result
 }
 
-export function profileCsv(file: InputFile, headerRow?: number, stopRow?: number, identity?: string) {
-  if (!/\.csv$/i.test(file.name)) invalid('AI_CSV_REQUIRED', 'Pilih berkas CSV untuk bantuan Gemini.')
-  const parsed = source(file, { headerRow, stopRow }, headers => headers.some(header => regionHeaders.includes(header) || personHeaders.includes(personHeader(header)) || header === normalize(identity)))
+export function profileAnalysisFile(file: InputFile, mapping: Pick<UploadMapping, 'sheet' | 'headerRow' | 'stopRow'>, identity?: string) {
+  if (!analysisFormat(file.name)) invalid('AI_FILE_FORMAT', 'Pilih berkas CSV atau Excel (XLSX/XLS) untuk bantuan Gemini.')
+  const parsed = source(file, mapping, headers => headers.some(header => regionHeaders.includes(header) || personHeaders.includes(personHeader(header)) || Boolean(identity && header === normalize(identity))))
   const rows = parsed.rows.filter(row => row.cells.some(item => item != null && item !== '') && !row.cells.every((item, index) => normalize(item) === parsed.headers[index]))
   const columns = parsed.headers.map((header, index) => {
     const values = rows.map(row => row.cells[index]).filter(item => item != null && item !== '')
@@ -181,11 +194,12 @@ export function profileCsv(file: InputFile, headerRow?: number, stopRow?: number
     const numeric = values.map(item => numericInput(String(item).trim().replace(/\s*%$/, '')))
     const allNumbers = numeric.length > 0 && numeric.every(Number.isFinite)
     const percent = allNumbers && values.some(item => String(item).trim().endsWith('%'))
-    const kind = !values.length ? 'empty' : !allNumbers ? 'category' : percent ? 'percentage' :
+    const excelPercent = allNumbers && rows.filter(row => row.percentColumns?.has(index)).length === values.length
+    const kind = !values.length ? 'empty' : !allNumbers ? 'category' : excelPercent ? 'fraction' : percent ? 'percentage' :
       numeric.every(item => Number.isSafeInteger(item) && item >= 0) ? 'count' : 'number'
     return { index, header, region, uniqueRegions, person, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
   })
-  return { headerRow: parsed.headerRow!, columns }
+  return { headerRow: parsed.headerRow!, sheet: parsed.sheet, columns }
 }
 
 function match(headers: string[], aliases: string[], label: string, location: string, optional = false) {
@@ -250,7 +264,7 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
   const rows: DataRow[] = []
   const seen = new Set<string>()
   let reported: Values | undefined
-  for (const { cells, location } of parsed.rows) {
+  for (const { cells, location, percentColumns } of parsed.rows) {
     if (cells.every(item => item == null || item === '')) continue
     const input = cells[key]
     if (normalize(input) === parsed.headers[key]) continue
@@ -260,7 +274,7 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
       const code = normalize(name)
       if (seen.has(code)) invalid('DUPLICATE_PERSON', 'Identitas petugas muncul lebih dari sekali. Gunakan satu baris per orang atau pilih kolom kode yang unik.', location)
       seen.add(code)
-      const values = Object.fromEntries(fields.map(({ field, index }) => [field.id, value(cells[index], field, `${location}, ${field.label}`, false)]))
+      const values = Object.fromEntries(fields.map(({ field, index }) => [field.id, value(cells[index], field, `${location}, ${field.label}`, false, percentColumns?.has(index))]))
       rows.push({ code, name, values, source: location })
       continue
     }
@@ -268,10 +282,10 @@ export function readDataset(file: InputFile, dataset: Dataset, mapping: UploadMa
     const region = isProvince ? null : findRegion(regionText(input))
     if (pes && isProvince) continue
     if (!isProvince && !region) invalid('UNKNOWN_REGION', 'Kode atau nama kabupaten/kota tidak ditemukan pada master Sumatera Barat.', location)
-    const values: Values = Object.fromEntries(fields.map(({ field, index }) => [field.id, value(cells[index], field, `${location}, ${field.label}`, pes)]))
+    const values: Values = Object.fromEntries(fields.map(({ field, index }) => [field.id, value(cells[index], field, `${location}, ${field.label}`, pes, percentColumns?.has(index))]))
     if (isProvince) {
       if (reported) invalid('DUPLICATE_PROVINCE', 'Baris rekap provinsi muncul lebih dari sekali.', location)
-      for (const { field, index } of reportedFields) values[field.id] = value(cells[index], field, `${location}, ${field.label}`, false)
+      for (const { field, index } of reportedFields) values[field.id] = value(cells[index], field, `${location}, ${field.label}`, false, percentColumns?.has(index))
       reported = values
       continue
     }

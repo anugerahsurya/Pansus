@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { unzipSync } from 'fflate'
+import * as xlsx from 'xlsx'
 import { csvAnalysisStream } from '../../packages/contracts/csv-analysis'
 import { exampleFiles } from '../../fixtures/synthetic/index'
 
@@ -52,7 +53,7 @@ test('konfigurasi CSV tersimpan bersama draf dan menolak pemetaan dataset asing'
   expect(reloaded.mappings.wilayah).toEqual(mapping)
 })
 
-test('pop-up menunjukkan progres analisis CSV sampai usulan siap', async ({ page }) => {
+test('unggahan Excel mengaktifkan tombol Gemini dan pop-up progres sampai hasil siap', async ({ page }) => {
   await login(page.request)
   const created = await page.request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
   const { id } = await created.json()
@@ -63,23 +64,27 @@ test('pop-up menunjukkan progres analisis CSV sampai usulan siap', async ({ page
   let finish!: () => void
   const ready = new Promise<void>(resolve => { finish = resolve })
   await page.route(`**/api/admin/dashboards/${id}/ai-drafts`, async route => {
+    expect(route.request().postData()).toContain('filename="progres.xlsx"')
     await ready
     await route.fulfill({
       contentType: csvAnalysisStream,
       body: [
         { type: 'progress', stage: 'mapping' },
         { type: 'progress', stage: 'validating' },
-        { type: 'result', data: { model: 'gemini-test', rows: 1, warnings: [], fields: [], mapping: { region: 'wilayah', headerRow: 1 } } },
+        { type: 'result', data: { model: 'gemini-test', rows: 1, warnings: [], fields: [], mapping: { region: 'wilayah', headerRow: 1, sheet: 'Progres' } } },
       ].map(event => JSON.stringify(event) + '\n').join(''),
     })
   })
   await page.goto(`/studio/${id}?tab=data`)
+  const book = xlsx.utils.book_new()
+  xlsx.utils.book_append_sheet(book, xlsx.utils.aoa_to_sheet([['wilayah', 'target', 'selesai'], ['1303', 10, 5]]), 'Progres')
   await page.getByLabel('Wilayah', { exact: true }).setInputFiles({
-    name: 'wilayah.csv', mimeType: 'text/csv', buffer: Buffer.from('wilayah,target,selesai\n1303,10,5'),
+    name: 'progres.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from(xlsx.write(book, { type: 'array', bookType: 'xlsx' })),
   })
-  const analyze = page.getByRole('button', { name: 'Analisis CSV Wilayah' })
+  const analyze = page.getByRole('button', { name: 'Analisis Excel Wilayah' })
+  await expect(analyze).toBeEnabled()
   await analyze.click()
-  const dialog = page.getByRole('dialog', { name: 'Analisis CSV Wilayah' })
+  const dialog = page.getByRole('dialog', { name: 'Analisis Excel Wilayah' })
   await expect(dialog.getByRole('progressbar')).toHaveJSProperty('value', 0)
   await dialog.getByRole('button', { name: 'Sembunyikan' }).click()
   await expect(dialog).toBeHidden()
@@ -88,7 +93,7 @@ test('pop-up menunjukkan progres analisis CSV sampai usulan siap', async ({ page
   finish()
   await expect(dialog.getByRole('progressbar')).toHaveJSProperty('value', 100)
   await dialog.getByRole('button', { name: 'Lihat usulan' }).click()
-  await expect(page.getByRole('region', { name: 'Usulan Gemini' }).getByText(/1 wilayah diperiksa/)).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Usulan Gemini' }).getByText(/1 wilayah diperiksa · Lembar Progres/)).toBeVisible()
 })
 
 test('Bantuan Gemini terlihat pada profil bawaan dan memberi petunjuk sesuai ketersediaan', async ({ page }) => {
@@ -104,7 +109,7 @@ test('Bantuan Gemini terlihat pada profil bawaan dan memberi petunjuk sesuai ket
   const help = page.getByRole('region', { name: 'Bantuan Gemini' })
   await expect(help.getByText(/Gemini belum tersedia/)).toBeVisible()
   await expect(help.getByText('Belum dikonfigurasi')).toBeVisible()
-  await expect(help.getByRole('button', { name: 'Analisis CSV', exact: true })).toBeDisabled()
+  await expect(help.getByRole('button', { name: 'Analisis berkas', exact: true })).toBeDisabled()
   aiAvailable = true
   await page.route(`**/api/admin/dashboards/${id}/ai-status`, route => route.fulfill({ json: { status: 'ready' } }))
   await page.reload()

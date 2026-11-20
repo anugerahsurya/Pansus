@@ -386,7 +386,7 @@ export class Monitoring {
     })
   }
 
-  async aiDraft(credentials: Credentials, id: string, file: InputFile, input: { slot: string; headerRow?: number; stopRow?: number; identity?: string }, onProgress?: (stage: CsvAnalysisStage) => void) {
+  async aiDraft(credentials: Credentials, id: string, file: InputFile, input: { slot: string; sheet?: string; headerRow?: number; stopRow?: number; identity?: string }, onProgress?: (stage: CsvAnalysisStage) => void) {
     const { user, dashboard, snapshot, manage } = await this.store.read(db => {
       const auth = this.protect(db, credentials, id)
       return { ...auth, snapshot: latestSnapshot(db, auth.dashboard), manage: canManage(db, auth.user, auth.dashboard) }
