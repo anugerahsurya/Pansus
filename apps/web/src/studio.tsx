@@ -35,7 +35,7 @@ function DashboardList({ admin, logout }: { admin: boolean; logout: () => void }
   </>
 }
 
-const accessLabels: Record<Visibility, string> = { public: 'Publik', link: 'Tautan rahasia', invite: 'Hanya orang yang diundang' }
+const accessLabels: Record<Visibility, string> = { public: 'Publik', link: 'Siapa pun yang punya tautan', invite: 'Hanya orang yang diundang' }
 function Workspace({ id }: { id: string }) {
   const [query, setQuery] = useSearchParams()
   const [editorPending, setEditorPending] = useState(false)
@@ -61,7 +61,8 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
   const path = `/admin/dashboards/${detail.id}`
   const [visibility, setVisibility] = useState(detail.visibility)
   const personalRows = detail.draft.datasets.some(dataset => dataset.grain === 'person')
-  const selectedVisibility = personalRows ? 'invite' : visibility
+  const selectedVisibility: Visibility = personalRows && visibility === 'public' ? 'link' : visibility
+  const canChangeAccess = detail.activeRelease && detail.visibility !== selectedVisibility && (!(personalRows || detail.activePersonal) || selectedVisibility !== 'public')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [working, setWorking] = useState(false)
@@ -72,11 +73,17 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
   const [closingReason, setClosingReason] = useState('')
   const [archiveForm, setArchiveForm] = useState(false)
   const closed = detail.activityStatus === 'closed'
+  const hasLinkGrant = detail.grants.some(grant => grant.mode === 'link')
   async function action<T>(callback: () => Promise<T>, message: string, after?: (value: T) => void) {
     setError(''); setSuccess(''); setWorking(true)
     try { const value = await callback(); setSuccess(message); after?.(value); reload() }
     catch (error) { setError((error as Error).message) }
     finally { setWorking(false) }
+  }
+  async function ensureShareLink(nextVisibility: Visibility) {
+    if (nextVisibility !== 'link' || hasLinkGrant) return
+    const result = await api<{ secret: string; slug: string }>(`${path}/grants`, 'POST', {})
+    setSecret(`${location.origin}/bagikan#${result.slug}.${result.secret}`)
   }
   async function invite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -88,18 +95,27 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
     {error && <Alert>{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}
     <div className="studio-grid">
       <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon"><Globe size={20} /></span><div><h2>Terbitkan dashboard</h2><p>Pilih siapa yang dapat membuka laporan pada tautan pembaca.</p></div></div>
-        <div className="form-stack"><label>Hak baca<select value={selectedVisibility} onChange={event => setVisibility(event.target.value as Visibility)}>{Object.entries(accessLabels).filter(([key]) => !personalRows || key === 'invite').map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
-        <p className="muted-text">{personalRows ? 'Rincian per orang hanya dapat dibuka oleh pengelola dan akun yang diundang.' : selectedVisibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : selectedVisibility === 'link' ? 'Siapa pun yang menerima tautan rahasia, termasuk penerima terusan, dapat membuka dashboard.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}</p>
-        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(() => api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility }), 'Dashboard terbit.')}><CheckCircle2 size={16} /> {detail.archivedAt ? 'Terbitkan kembali' : detail.activeRelease ? 'Terbitkan perubahan draf' : 'Terbitkan dashboard'}</button>{!personalRows && !detail.activePersonal && detail.activeRelease && detail.visibility !== selectedVisibility && <button className="button" disabled={working} onClick={() => action(() => api(`${path}/access`, 'PATCH', { visibility: selectedVisibility }), 'Hak baca diperbarui.')}>Ubah hak baca</button>}</div>
+        <div className="form-stack"><label>Hak baca<select value={selectedVisibility} onChange={event => setVisibility(event.target.value as Visibility)}>{Object.entries(accessLabels).filter(([key]) => !personalRows || key !== 'public').map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
+        <p className="muted-text">{selectedVisibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : selectedVisibility === 'link' ? 'Siapa pun yang menerima tautan berbagi dapat langsung membuka dashboard tanpa perlu masuk akun.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}{personalRows && ' Dashboard per individu tidak ditampilkan di katalog publik.'}</p>
+        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(async () => {
+          await api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility })
+          await ensureShareLink(selectedVisibility)
+        }, 'Dashboard terbit.')}><CheckCircle2 size={16} /> {detail.archivedAt ? 'Terbitkan kembali' : detail.activeRelease ? 'Terbitkan perubahan draf' : 'Terbitkan dashboard'}</button>{canChangeAccess && <button className="button" disabled={working} onClick={() => action(async () => {
+          await api(`${path}/access`, 'PATCH', { visibility: selectedVisibility })
+          await ensureShareLink(selectedVisibility)
+        }, 'Hak baca diperbarui.')}>Ubah hak baca</button>}</div>
         {(!detail.preview || detail.preview.demo) && <Alert tone="info">Terapkan berkas kegiatan untuk mengganti data contoh sebelum menerbitkan.</Alert>}
-        {detail.activeRelease && !detail.archivedAt && <><label>Tautan pembaca<input value={readerLink} readOnly onFocus={event => event.target.select()} /></label><button className="button subtle" onClick={() => setArchiveForm(!archiveForm)}>Arsipkan dashboard</button>
+        {detail.activeRelease && !detail.archivedAt && <>
+          {detail.visibility === 'link' && secret && <label>Tautan berbagi (bisa dibuka siapa saja)<input value={secret} readOnly onFocus={event => event.target.select()} /></label>}
+          <label>{detail.visibility === 'link' ? 'Tautan pembaca (pengelola / penerima sesi aktif)' : 'Tautan pembaca'}<input value={readerLink} readOnly onFocus={event => event.target.select()} /></label>
+          <button className="button subtle" onClick={() => setArchiveForm(!archiveForm)}>Arsipkan dashboard</button>
           {archiveForm && <><Alert tone="info">Dashboard sementara disembunyikan dari katalog dan pembaca. Rilis tersimpan di Studio.</Alert><button className="button" disabled={working} onClick={() => action(() => api(`${path}/archive`, 'POST', { expectedRevision: detail.draftRevision }), 'Dashboard diarsipkan.', () => setArchiveForm(false))}>Konfirmasi pengarsipan</button></>}</>}</div>
       </section>
-      <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon blue-icon"><Link2 size={20} /></span><div><h2>Izin pembaca</h2><p>Kelola undangan email dan tautan rahasia.</p></div></div>
+      <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon blue-icon"><Link2 size={20} /></span><div><h2>Izin pembaca</h2><p>Kelola tautan berbagi dan undangan email.</p></div></div>
+        {detail.visibility === 'link' && detail.activeRelease && <div className="form-stack"><button className="button" disabled={working} onClick={() => action(() => api<{ secret: string; slug: string }>(`${path}/grants`, 'POST', {}), 'Tautan berbagi baru dibuat.', result => setSecret(`${location.origin}/bagikan#${result.slug}.${result.secret}`))}><Link2 size={16} /> Buat atau rotasi tautan</button>
+          {secret && <label>Salin tautan berbagi<input value={secret} readOnly onFocus={event => event.target.select()} /></label>}</div>}
         <form onSubmit={invite} className="form-stack"><label>Email undangan<input type="email" name="email" required maxLength={100} placeholder="pembaca@bps.go.id" /></label><button className="button" disabled={working}>Tambah undangan</button></form>
-        {detail.visibility === 'link' && detail.activeRelease && <div className="form-stack"><button className="button" disabled={working} onClick={() => action(() => api<{ secret: string; slug: string }>(`${path}/grants`, 'POST', {}), 'Tautan rahasia baru dibuat.', result => setSecret(`${location.origin}/bagikan#${result.slug}.${result.secret}`))}><Link2 size={16} /> Buat atau rotasi tautan</button>
-          {secret && <label>Salin tautan rahasia<input value={secret} readOnly onFocus={event => event.target.select()} /></label>}</div>}
-        <div className="job-list">{detail.grants.map(grant => <div className="grant-entry" key={grant.id}><span>{grant.email || 'Tautan rahasia aktif'}</span><button className="button subtle danger-text" disabled={working} onClick={() => action(() => api(`${path}/grants/${grant.id}`, 'DELETE'), 'Izin dicabut.', () => setSecret(''))}>Cabut</button></div>)}</div>
+        <div className="job-list">{detail.grants.map(grant => <div className="grant-entry" key={grant.id}><span>{grant.email || 'Tautan berbagi aktif'}</span><button className="button subtle danger-text" disabled={working} onClick={() => action(() => api(`${path}/grants/${grant.id}`, 'DELETE'), 'Izin dicabut.', () => setSecret(''))}>Cabut</button></div>)}</div>
       </section>
       <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon blue-icon"><Users size={20} /></span><div><h2>Operator data</h2><p>Tugaskan operator satker pada dashboard ini.</p></div></div>
         {detail.operators.map(operator => <label className="check" key={operator.id}><input type="checkbox" disabled={working} checked={operator.assigned} onChange={event => action(() => api(`${path}/operators/${operator.id}`, 'PATCH', { enabled: event.target.checked }), 'Penugasan diperbarui.')} /> {operator.name} <small>{operator.email}</small></label>)}

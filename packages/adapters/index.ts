@@ -11,7 +11,13 @@ export type InputFile = { name: string; bytes: Uint8Array }
 const MAX_ROWS = 10_000
 const MAX_COLUMNS = 100
 const regionHeaders = ['kode wilayah', 'kode_wilayah', 'wilayah', 'level_2_full_code', 'kode kab/kota', 'nama kab/kota', 'code', 'kode', 'kabupaten/kota']
-const personHeaders = ['nama petugas', 'nama petugas lapangan', 'nama pencacah', 'nama pengawas', 'nama pegawai', 'nama peserta', 'nama operator', 'nama lengkap', 'nama', 'full name', 'name', 'id petugas', 'kode petugas', 'petugas id', 'petugas', 'enumerator']
+const personHeaders = [
+  'nama petugas', 'nama petugas lapangan', 'nama pencacah', 'nama pengawas', 'nama pegawai', 'nama peserta',
+  'nama operator', 'nama lengkap', 'nama', 'full name', 'name', 'id petugas', 'kode petugas', 'petugas id',
+  'petugas', 'enumerator', 'ppl', 'pml', 'koseka', 'mitra', 'pegawai', 'pelaksana', 'responden', 'pengguna',
+  'user', 'username', 'akun', 'email', 'surel', 'nip', 'nik', 'id sobat', 'sobat id', 'sobat',
+  'kode pegawai', 'kode mitra', 'id mitra', 'id pegawai', 'nama ppl', 'nama pml', 'nama mitra',
+]
 const personHeader = (input: string) => input.replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim()
 const statusHeaders = ['status', 'assignment_status', 'status assignment', 'status penugasan', 'status sls']
 const countHeaders = ['jumlah', 'count', 'total', 'jumlah penugasan']
@@ -210,6 +216,7 @@ export function profileAnalysisFile(file: InputFile, mapping: Pick<UploadMapping
     const matched = data.map(item => findRegion(regionText(item))?.code)
     const region = matched.length > 0 && values.length === rows.length && matched.every(Boolean)
     const uniqueRegions = region && new Set(matched).size === matched.length
+    const uniqueValues = values.length === rows.length && values.length > 0 && new Set(values.map(normalize)).size === values.length
     const person = (personHeaders.includes(personHeader(header)) || Boolean(identity && header === normalize(identity))) && (values.length === rows.length && values.length > 0)
     const numeric = values.map(item => numericInput(String(item).trim().replace(/\s*%$/, '')))
     const allNumbers = numeric.length > 0 && numeric.every(Number.isFinite)
@@ -217,7 +224,8 @@ export function profileAnalysisFile(file: InputFile, mapping: Pick<UploadMapping
     const excelPercent = allNumbers && rows.filter(row => row.percentColumns?.has(index)).length === values.length
     const kind = !values.length ? 'empty' : values.every(parseDateTime) ? 'datetime' : !allNumbers ? 'category' : excelPercent ? 'fraction' : percent ? 'percentage' :
       numeric.every(item => Number.isSafeInteger(item) && item >= 0) ? 'count' : 'number'
-    return { index, header, region, uniqueRegions, person, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
+    const identityCandidate = uniqueValues && !region && (kind === 'category' || /^(id|kode|no|nomor|nip|nik|sobat|user|akun|petugas|mitra|ppl|pml)\b/i.test(personHeader(header)))
+    return { index, header, region, uniqueRegions, person, identityCandidate, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
   })
   return { headerRow: parsed.headerRow!, sheet: parsed.sheet, columns }
 }

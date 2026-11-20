@@ -416,6 +416,14 @@ textarea { min-height: 70px; resize: vertical; }
 .saved-join > p { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
 .csv-assist { border-block: 1px solid var(--line); padding-block: 12px; }
 .csv-assist p, .ai-suggestion p { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.upload-step { padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--subtle); }
+.upload-step.csv-assist { border: 1px solid var(--line); padding: 13px; }
+.step-heading { display: flex; align-items: flex-start; gap: 10px; }
+.step-heading > div { flex: 1; min-width: 0; }
+.step-heading p { margin-top: 2px; font-size: .75rem; }
+.step-badge { display: inline-grid; place-items: center; flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--selection); color: var(--brand); font-size: .74rem; font-weight: 800; }
+.ai-widget-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.upload-preview { display: grid; gap: 14px; }
 .ai-panel-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 5px 10px; }
 .ai-health { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 4px; background: var(--wash); color: var(--muted); font-size: .72rem; font-weight: 750; }
 .ai-health::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }

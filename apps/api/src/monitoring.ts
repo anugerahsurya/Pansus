@@ -28,7 +28,7 @@ const sessionKey = (session: string) => 'session:' + hash(session)
 const userKey = (id: string) => 'user:' + id
 const hasPersonalRows = (definition: Definition) => definition.datasets.some(dataset => dataset.grain === 'person')
 function checkPersonalAccess(definition: Definition, visibility: Visibility) {
-  if (hasPersonalRows(definition) && visibility !== 'invite') fail(422, 'PERSONAL_DATA_REQUIRES_INVITES', 'Dashboard yang memuat progres per orang hanya dapat diterbitkan untuk akun yang diundang.')
+  if (hasPersonalRows(definition) && visibility === 'public') fail(422, 'PERSONAL_DATA_REQUIRES_INVITES', 'Dashboard yang memuat progres per orang tidak dapat masuk katalog publik. Gunakan tautan berbagi atau undangan.')
 }
 const assertOpen = (dashboard: Dashboard) => { if (dashboard.activityStatus === 'closed') fail(409, 'ACTIVITY_CLOSED', 'Kegiatan sudah selesai. Hubungi admin untuk membuka kembali.') }
 const putDashboard = (db: Records, dashboard: Dashboard) => db.put(`dashboard:${dashboard.id}`, dashboard)
@@ -288,7 +288,7 @@ export class Monitoring {
     const definition = release?.definition ?? dashboard.draft
     const previous = previousDay(snapshot.date)
     const history = dashboard.releaseIds.map(id => db.get<Release>(releaseKey(dashboard, id))!)
-      .filter(item => dashboard.visibility === 'invite' || !hasPersonalRows(item.definition))
+      .filter(item => dashboard.visibility !== 'public' || !hasPersonalRows(item.definition))
       .sort((a, b) => byCondition(b, a) || b.version - a.version)
     let baseline: Snapshot | undefined
     if (release) {
@@ -312,7 +312,7 @@ export class Monitoring {
       if (!dashboard || !this.authorize(db, credentials, dashboard)) fail(404, 'NOT_FOUND', 'Dashboard tidak ditemukan atau akses diperlukan.')
       if (selected && !dashboard.releaseIds.includes(selected)) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
       const release = db.get<Release>(releaseKey(dashboard, selected || dashboard.activeRelease!))
-      if (!release || (dashboard.visibility !== 'invite' && hasPersonalRows(release.definition))) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
+      if (!release || (dashboard.visibility === 'public' && hasPersonalRows(release.definition))) fail(404, 'NOT_FOUND', 'Versi laporan tidak ditemukan.')
       return this.report(db, dashboard, release)
     })
   }
@@ -399,7 +399,7 @@ export class Monitoring {
     assertOpen(dashboard)
     const dataset = dashboard.draft.datasets.find(item => item.id === input.slot)
     if (!dataset || dataset.join) fail(422, 'AI_SLOT', 'Pilih sumber berkas yang tersedia pada draf.')
-    const design = dashboard.template === 'custom' && !snapshot?.data[dataset.id] && !dashboard.mappings[dataset.id]?.region && manage
+    const design = dashboard.template === 'custom' && !snapshot?.data[dataset.id] && manage
     this.rate(`gemini:${user.id}`)
     try {
       return await suggestCsv({ ...input, file, dataset, design, definition: dashboard.draft, template: dashboard.template, expectedRevision: dashboard.draftRevision, onProgress })

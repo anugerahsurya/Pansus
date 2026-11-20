@@ -1,11 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { ArrowDown, FileSpreadsheet, Info, Plus, Settings2 } from 'lucide-react'
+import { ArrowDown, Eye, FileSpreadsheet, Globe, Info, Plus, Settings, Settings2, Sparkles } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import type { Dataset, Definition, UploadMapping } from '../../../packages/contracts/index'
+import type { Dataset, Definition, UploadMapping, Widget } from '../../../packages/contracts/index'
 import { analysisFormat, type CsvAnalysisStage, type GeminiStatus } from '../../../packages/contracts/csv-analysis'
 import { formatDateTime } from '../../../packages/contracts/datetime'
+import { widgetLabels } from '../../../packages/widgets/index'
 import { ApiError, api, conditionDate, currentWib, fmt, requestCsvAnalysis, type CsvSuggestion, type DashboardDetail, type ImportJob } from './api'
 import { Alert } from './common'
+import { DraftPreview } from './preview'
 import { SourceWorkbench } from './source-workbench'
 
 const tabularFormats = '.csv,.tsv,.xlsx,.xls,.json'
@@ -63,6 +65,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const [checkingAi, setCheckingAi] = useState(false)
   const [showAnalysis, setShowAnalysis] = useState(false)
   const reviewRef = useRef<HTMLElement>(null)
+  const previewRef = useRef<HTMLElement>(null)
   const [aiError, setAiError] = useState('')
   const [suggestion, setSuggestion] = useState<{ slot: string; result: CsvSuggestion }>()
   const [applied, setApplied] = useState<{ slot: string; designed: boolean }>()
@@ -87,8 +90,8 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const aiEnabled = detail.aiAvailable && health !== 'unconfigured'
   const analysisHint = !aiEnabled ? 'Gemini belum tersedia di server ini. Pemetaan manual tetap bisa digunakan.' :
     auto || workbook ? 'Untuk menganalisis CSV atau Excel dengan Gemini, pilih satu berkas per dataset.' :
-    aiSlots.length ? 'Gemini menerima struktur kolom yang disaring dan tipe nilainya. Isi baris dan angka diproses di Pansus.' :
-    'Pilih berkas CSV atau Excel (XLSX/XLS) pada salah satu sumber untuk memulai analisis.'
+    aiSlots.length ? 'Gemini menyusun pemetaan kolom, kartu ringkasan, grafik, dan tabel pratinjau otomatis dari struktur berkas Anda (wilayah maupun individu).' :
+    'Pilih berkas CSV atau Excel (XLSX/XLS) pada Langkah 1 di atas untuk mengaktifkan analisis Gemini.'
   const savedInputs = detail.savedInputs
   const matchingInputs = savedInputs?.date === date && savedInputs.time === time ? savedInputs : undefined
   const updatedFiles = slots.some(slot => files[slot.id])
@@ -207,8 +210,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
     if (source.format === 'Excel' && mappings[slot]?.sheet) body.append('sheet', mappings[slot].sheet)
     if (mappings[slot]?.headerRow) body.append('headerRow', String(mappings[slot].headerRow))
     if (mappings[slot]?.stopRow) body.append('stopRow', String(mappings[slot].stopRow))
-    const dataset = detail.draft.datasets.find(item => item.id === slot)
-    if (dataset?.grain === 'person' && mappings[slot]?.region) body.append('identity', mappings[slot].region)
+    if (mappings[slot]?.region) body.append('identity', mappings[slot].region)
     try {
       const result = await requestCsvAnalysis(detail.id, body, stage => {
         const progress = analysisStages[stage]
@@ -284,9 +286,16 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
     } catch (failure) { setError((failure as Error).message) }
     finally { setBusy(false) }
   }
+  const suggestedWidgets = suggestion?.result.definition?.widgets.filter(widget => widget.dataset === suggestion.slot) ?? []
+  const widgetSummary = Object.entries(suggestedWidgets.reduce<Record<string, number>>((counts, widget: Widget) => {
+    const label = widget.type === 'table' && suggestion?.result.grain === 'person' ? 'Tabel petugas' : widgetLabels[widget.type]
+    counts[label] = (counts[label] ?? 0) + 1
+    return counts
+  }, {}))
+  const hasRealPreview = Boolean(detail.preview && !detail.preview.demo)
   return <div className="studio-grid">
     <section className="panel studio-panel">
-      <div className="panel-heading"><div><h2>Perbarui data</h2><p>Pilih waktu yang tercatat pada ekspor, lalu periksa berkas sebelum menerapkan pembaruan.</p></div></div>
+      <div className="panel-heading"><div><h2>Perbarui data</h2><p>Ikuti tiga langkah berurutan: pilih berkas, susun struktur dengan Gemini atau manual, lalu periksa dan konfirmasi agar data langsung tampil di pratinjau.</p></div></div>
       {closed && <Alert tone="info">Kegiatan selesai{detail.closedAt && ` pada ${new Intl.DateTimeFormat('id-ID', { dateStyle: 'long', timeZone: 'Asia/Jakarta' }).format(new Date(detail.closedAt))}`}. Hubungi admin untuk membuka kembali.</Alert>}
       {custom && <section className="upload-sources form-stack" aria-label="Sumber data">
         <div className="editor-fields-heading">
@@ -302,62 +311,70 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       </section>}
       <form className="form-stack" onSubmit={preview}>
         <fieldset key={inputRevision} disabled={closed || busy || suggesting} className="form-stack bare-fieldset">
-          <div className="form-columns"><label>Tanggal kondisi<input type="date" required value={date} onChange={event => setDate(event.target.value)} /></label><label>Jam kondisi (WIB)<input type="time" required value={time} onChange={event => setTime(event.target.value)} /></label></div>
-          {savedInputs && !matchingInputs && <button type="button" className="button subtle" onClick={() => { setDate(savedInputs.date); setTime(savedInputs.time) }}>Pakai kondisi terakhir · {conditionDate(savedInputs.date)} · {savedInputs.time} WIB</button>}
-          {matchingInputs && <p className="muted-text">{canReapply ? 'Periksa ulang berkas tersimpan untuk menerapkan perubahan kolom atau penggabungan pada kondisi ini.' : 'Berkas tersimpan dapat digunakan kembali pada kondisi ini. Pilih berkas baru untuk sumber yang ingin ditambah atau diganti.'}</p>}
-          {detail.template === 'susenas' && <label>Profil sumber<select value={workbook ? 'workbook' : 'separate'} onChange={event => { setWorkbook(event.target.value === 'workbook'); setSuggestion(undefined) }}><option value="workbook">Satu workbook Susenas dan Seruti</option><option value="separate">Berkas terpisah per dataset</option></select></label>}
-          {detail.template === 'pes' && <label>Cara memilih berkas<select value={auto ? 'auto' : 'manual'} onChange={event => { setAuto(event.target.value === 'auto'); setSuggestion(undefined) }}><option value="auto">Deteksi otomatis</option><option value="manual">Pilih per dataset{detail.aiAvailable ? ' (manual atau Gemini)' : ''}</option></select></label>}
-          <section className="form-stack csv-assist" aria-label="Bantuan Gemini">
-            <div className="ai-panel-heading">
+          <div className="upload-step form-stack">
+            <div className="step-heading"><span className="step-badge">1</span><div><h3>Pilih waktu kondisi & berkas</h3><p className="muted-text">Tentukan tanggal/jam data dan pilih berkas CSV, TSV, Excel, atau JSON.</p></div></div>
+            <div className="form-columns"><label>Tanggal kondisi<input type="date" required value={date} onChange={event => setDate(event.target.value)} /></label><label>Jam kondisi (WIB)<input type="time" required value={time} onChange={event => setTime(event.target.value)} /></label></div>
+            {savedInputs && !matchingInputs && <button type="button" className="button subtle" onClick={() => { setDate(savedInputs.date); setTime(savedInputs.time) }}>Pakai kondisi terakhir · {conditionDate(savedInputs.date)} · {savedInputs.time} WIB</button>}
+            {matchingInputs && <p className="muted-text">{canReapply ? 'Periksa ulang berkas tersimpan untuk menerapkan perubahan kolom atau penggabungan pada kondisi ini.' : 'Berkas tersimpan dapat digunakan kembali pada kondisi ini. Pilih berkas baru untuk sumber yang ingin ditambah atau diganti.'}</p>}
+            {detail.template === 'susenas' && <label>Profil sumber<select value={workbook ? 'workbook' : 'separate'} onChange={event => { setWorkbook(event.target.value === 'workbook'); setSuggestion(undefined) }}><option value="workbook">Satu workbook Susenas dan Seruti</option><option value="separate">Berkas terpisah per dataset</option></select></label>}
+            {detail.template === 'pes' && <label>Cara memilih berkas<select value={auto ? 'auto' : 'manual'} onChange={event => { setAuto(event.target.value === 'auto'); setSuggestion(undefined) }}><option value="auto">Deteksi otomatis</option><option value="manual">Pilih per dataset{detail.aiAvailable ? ' (manual atau Gemini)' : ''}</option></select></label>}
+            {auto && <div className="form-stack">
+              <label className="file-slot">
+                <FileSpreadsheet size={20} aria-hidden="true" /><span><b>Tiga ekspor progres PES</b><small>Pilih ringkasan SLS dan dua ekspor assignment sekaligus. Urutan bebas. CSV, TSV, Excel, atau JSON.</small></span>
+                <input aria-label="Tiga ekspor progres PES" aria-describedby="batch-selection" type="file" multiple accept={tabularFormats} onChange={event => setBatch(Array.from(event.target.files ?? []))} />
+              </label>
+              <div id="batch-selection" className="selection-summary" aria-live="polite">{batch.length}/3 berkas dipilih
+                {!!batch.length && <ul>{batch.map((file, index) => <li key={index}>{file.name}</li>)}</ul>}
+              </div>
+            </div>}
+            {slots.filter(slot => !auto || slot.id === 'sls_detail').map(slot => {
+              const savedFile = matchingInputs?.files[slot.id]
+              const hint = savedFile ? `Tersimpan · ${savedFile}` : workbook ? 'Pilih workbook XLSX atau XLS' : slot.id === 'sls_detail' ? 'CSV SSLS atau Excel Sheet9' : 'Pilih CSV, TSV, Excel, atau JSON'
+              return <label key={slot.id} className="file-slot"><FileSpreadsheet size={20} aria-hidden="true" /><span><b>{slot.label}</b><small>{files[slot.id]?.name || hint}</small></span><input aria-label={slot.label} type="file" accept={workbook ? '.xlsx,.xls' : tabularFormats} required={slot.id !== 'sls_detail' && !files[slot.id] && !savedFile} onChange={event => {
+              const file = event.target.files?.[0]
+              setFiles(current => ({ ...current, [slot.id]: file }))
+              if (suggestion?.slot === slot.id) setSuggestion(undefined)
+              setApplied(undefined); setAiError('')
+            }} /></label>})}
+            {!!tableSources.length && <a href="#tabel-sumber" className="text-button source-jump">Lihat tabel sumber <ArrowDown size={14} aria-hidden="true" /></a>}
+          </div>
+
+          <section className="upload-step form-stack csv-assist" aria-label="Bantuan Gemini">
+            <div className="step-heading"><span className="step-badge">2</span><div className="ai-panel-heading">
               <h3>Bantuan Gemini</h3>
               <span className="ai-health" data-status={health} role="status">{suggesting ? 'Sedang menganalisis' : checkingAi ? 'Memeriksa koneksi…' : geminiLabels[health]}</span>
-            </div>
+            </div></div>
             <p>{analysisHint}</p>
             {health === 'unavailable' && <p>Coba cek koneksi kembali atau lanjutkan dengan pemetaan manual.</p>}
             <div className="actions">
-              {aiSlots.length ? aiSlots.map(slot => <button className="button" type="button" key={slot.id} onClick={() => void analyzeFile(slot.id)} disabled={!aiEnabled || processing || draftPending}>Analisis {slot.format} {slot.label}</button>) :
+              {aiSlots.length ? aiSlots.map(slot => <button className="button" type="button" key={slot.id} onClick={() => void analyzeFile(slot.id)} disabled={!aiEnabled || processing || draftPending}><Sparkles size={15} aria-hidden="true" /> Analisis {slot.format} {slot.label}</button>) :
                 <button className="button" type="button" disabled>Analisis berkas</button>}
               {detail.aiAvailable && (auto || workbook) && <button className="text-button" type="button" onClick={() => { setAuto(false); setWorkbook(false); setSuggestion(undefined) }}>Pilih berkas per dataset</button>}
               <button className="text-button" type="button" onClick={() => void checkAi()} disabled={checkingAi}>Cek koneksi Gemini</button>
             </div>
+            {!auto && <details className="mapping"><summary><Settings2 size={16} aria-hidden="true" /> Pemetaan berkas</summary><p>Opsional: tentukan lembar, baris judul, atau kolom identitas secara manual jika ingin menyesuaikan.</p>
+              {slots.map(slot => <details className="mapping-slot" key={slot.id}><summary>{slot.label}</summary>
+                <div className="form-stack mapping-fields">
+                  <fieldset className="form-stack mapping-group"><legend>Pengaturan berkas</legend>
+                    <label>Nama lembar<input value={mappings[slot.id]?.sheet ?? ''} onChange={event => setMapping(slot.id, 'sheet', event.target.value)} placeholder="Otomatis" /></label>
+                    <label>Baris judul<input type="number" min="1" value={mappings[slot.id]?.headerRow ?? ''} onChange={event => setMapping(slot.id, 'headerRow', event.target.value)} placeholder="Otomatis" /></label>
+                    <label>Baris terakhir<input type="number" min="2" value={mappings[slot.id]?.stopRow ?? ''} onChange={event => setMapping(slot.id, 'stopRow', event.target.value)} placeholder="Otomatis" /></label>
+                    {!workbook && slot.id !== 'sls_detail' && <label>Jalur daftar JSON<input value={mappings[slot.id]?.jsonPath ?? ''} onChange={event => setMapping(slot.id, 'jsonPath', event.target.value)} placeholder="Contoh data.wilayah" /></label>}
+                  </fieldset>
+                  {!workbook && slot.id !== 'sls_detail' && <fieldset className="form-stack mapping-group"><legend>Pemetaan kolom</legend>
+                    <label>{detail.draft.datasets.find(item => item.id === slot.id)?.grain === 'person' ? 'Judul kolom nama atau kode petugas' : 'Judul kolom wilayah atau identitas'}<input value={mappings[slot.id]?.region ?? ''} onChange={event => setMapping(slot.id, 'region', event.target.value)} placeholder="Otomatis" /></label>
+                    {slot.fields.filter(field => field.enabled !== false && !field.derived && !field.formula).map(field => <label key={field.id}>{field.label}<input value={mappings[slot.id]?.columns?.[field.id] ?? ''} onChange={event => setColumn(slot.id, field.id, event.target.value)} placeholder="Judul sumber atau jalur JSON" /></label>)}
+                  </fieldset>}
+                </div>
+              </details>)}
+            </details>}
           </section>
-          {auto && <div className="form-stack">
-            <label className="file-slot">
-              <FileSpreadsheet size={20} aria-hidden="true" /><span><b>Tiga ekspor progres PES</b><small>Pilih ringkasan SLS dan dua ekspor assignment sekaligus. Urutan bebas. CSV, TSV, Excel, atau JSON.</small></span>
-              <input aria-label="Tiga ekspor progres PES" aria-describedby="batch-selection" type="file" multiple accept={tabularFormats} onChange={event => setBatch(Array.from(event.target.files ?? []))} />
-            </label>
-            <div id="batch-selection" className="selection-summary" aria-live="polite">{batch.length}/3 berkas dipilih
-              {!!batch.length && <ul>{batch.map((file, index) => <li key={index}>{file.name}</li>)}</ul>}
-            </div>
-          </div>}
-          {slots.filter(slot => !auto || slot.id === 'sls_detail').map(slot => {
-            const savedFile = matchingInputs?.files[slot.id]
-            const hint = savedFile ? `Tersimpan · ${savedFile}` : workbook ? 'Pilih workbook XLSX atau XLS' : slot.id === 'sls_detail' ? 'CSV SSLS atau Excel Sheet9' : 'Pilih CSV, TSV, Excel, atau JSON'
-            return <label key={slot.id} className="file-slot"><FileSpreadsheet size={20} aria-hidden="true" /><span><b>{slot.label}</b><small>{files[slot.id]?.name || hint}</small></span><input aria-label={slot.label} type="file" accept={workbook ? '.xlsx,.xls' : tabularFormats} required={slot.id !== 'sls_detail' && !files[slot.id] && !savedFile} onChange={event => {
-            const file = event.target.files?.[0]
-            setFiles(current => ({ ...current, [slot.id]: file }))
-            if (suggestion?.slot === slot.id) setSuggestion(undefined)
-            setApplied(undefined); setAiError('')
-          }} /></label>})}
-          {!auto && <details className="mapping"><summary><Settings2 size={16} aria-hidden="true" /> Pemetaan berkas</summary><p>Tentukan letak judul dan kolom jika berkas perlu dipetakan secara manual.</p>
-            {slots.map(slot => <details className="mapping-slot" key={slot.id}><summary>{slot.label}</summary>
-              <div className="form-stack mapping-fields">
-                <fieldset className="form-stack mapping-group"><legend>Pengaturan berkas</legend>
-                  <label>Nama lembar<input value={mappings[slot.id]?.sheet ?? ''} onChange={event => setMapping(slot.id, 'sheet', event.target.value)} placeholder="Otomatis" /></label>
-                  <label>Baris judul<input type="number" min="1" value={mappings[slot.id]?.headerRow ?? ''} onChange={event => setMapping(slot.id, 'headerRow', event.target.value)} placeholder="Otomatis" /></label>
-                  <label>Baris terakhir<input type="number" min="2" value={mappings[slot.id]?.stopRow ?? ''} onChange={event => setMapping(slot.id, 'stopRow', event.target.value)} placeholder="Otomatis" /></label>
-                  {!workbook && slot.id !== 'sls_detail' && <label>Jalur daftar JSON<input value={mappings[slot.id]?.jsonPath ?? ''} onChange={event => setMapping(slot.id, 'jsonPath', event.target.value)} placeholder="Contoh data.wilayah" /></label>}
-                </fieldset>
-                {!workbook && slot.id !== 'sls_detail' && <fieldset className="form-stack mapping-group"><legend>Pemetaan kolom</legend>
-                  <label>{detail.draft.datasets.find(item => item.id === slot.id)?.grain === 'person' ? 'Judul kolom nama atau kode petugas' : 'Judul kolom wilayah'}<input value={mappings[slot.id]?.region ?? ''} onChange={event => setMapping(slot.id, 'region', event.target.value)} placeholder="Otomatis" /></label>
-                  {slot.fields.filter(field => field.enabled !== false && !field.derived && !field.formula).map(field => <label key={field.id}>{field.label}<input value={mappings[slot.id]?.columns?.[field.id] ?? ''} onChange={event => setColumn(slot.id, field.id, event.target.value)} placeholder="Judul sumber atau jalur JSON" /></label>)}
-                </fieldset>}
-              </div>
-            </details>)}
-          </details>}
-          {draftPending && <p className="muted-text" role="status">Pemeriksaan tersedia setelah draf tersimpan.</p>}
-          {!!tableSources.length && <a href="#tabel-sumber" className="text-button source-jump">Lihat tabel sumber <ArrowDown size={14} aria-hidden="true" /></a>}
-          <button className="button primary" disabled={draftPending || processing || (auto ? batch.length !== 3 : missingFiles || !updatedFiles && !canReapply)}>{busy || processing ? 'Memproses…' : 'Periksa unggahan'}</button>
+
+          <div className="upload-step form-stack">
+            <div className="step-heading"><span className="step-badge">3</span><div><h3>Periksa & masukkan data ke pratinjau</h3><p className="muted-text">Validasi isi berkas, lalu konfirmasi kata sandi agar data langsung tampil pada pratinjau dashboard.</p></div></div>
+            {draftPending && <p className="muted-text" role="status">Pemeriksaan tersedia setelah draf tersimpan.</p>}
+            <button className="button primary" disabled={draftPending || processing || (auto ? batch.length !== 3 : missingFiles || !updatedFiles && !canReapply)}>{busy || processing ? 'Memproses…' : 'Periksa unggahan'}</button>
+          </div>
         </fieldset>
       </form>
     </section>
@@ -369,18 +386,25 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
         <button type="button" className="button" onClick={() => setShowAnalysis(true)}>Lihat progres analisis</button>
       </div>}
       {aiError && <Alert>{aiError}</Alert>}
-      {applied && <Alert tone="success">{applied.designed ? 'Usulan disimpan ke draf.' : 'Usulan dimasukkan ke pemetaan.'}
-        {detail.canManage && <div className="actions"><button className="text-button" type="button" onClick={() => setQuery({ tab: 'editor', section: 'fields', source: applied.slot })}>Atur kolom sumber</button></div>}
+      {applied && <Alert tone="success">{applied.designed ? 'Usulan struktur dan komponen dashboard disimpan ke draf. Lanjutkan ke Langkah 3 (Periksa unggahan) agar data tampil di pratinjau.' : 'Usulan dimasukkan ke pemetaan. Lanjutkan ke Langkah 3 (Periksa unggahan).'}
+        {detail.canManage && <div className="actions">
+          <button className="text-button" type="button" onClick={() => setQuery({ tab: 'editor', section: 'fields', source: applied.slot })}>Atur kolom sumber</button>
+          {applied.designed && <button className="text-button" type="button" onClick={() => setQuery({ tab: 'editor', section: 'widgets' })}>Poles di Editor</button>}
+        </div>}
       </Alert>}
       {suggestion && <div className="form-stack">
-        <p>{suggestion.result.model} · {suggestion.result.rows} {suggestion.result.grain === 'person' ? 'petugas' : 'wilayah'} diperiksa{suggestion.result.mapping.sheet && ` · Lembar ${suggestion.result.mapping.sheet}`} · Baris judul {suggestion.result.mapping.headerRow}</p>
+        <p>{suggestion.result.model} · {suggestion.result.rows} {suggestion.result.grain === 'person' ? 'petugas / individu' : 'wilayah'} diperiksa{suggestion.result.mapping.sheet && ` · Lembar ${suggestion.result.mapping.sheet}`} · Baris judul {suggestion.result.mapping.headerRow}</p>
         <div className="table-scroll source-scroll" tabIndex={0} role="region" aria-label="Pemetaan yang disarankan"><table>
           <thead><tr><th scope="col">Kolom</th><th scope="col">Judul sumber</th><th scope="col">Tipe</th></tr></thead>
-          <tbody><tr><th scope="row">{suggestion.result.grain === 'person' ? 'Identitas petugas' : 'Wilayah'}</th><td>{suggestion.result.mapping.region}</td><td>Kunci</td></tr>
+          <tbody><tr><th scope="row">{suggestion.result.grain === 'person' ? 'Identitas petugas / individu' : 'Wilayah'}</th><td>{suggestion.result.mapping.region}</td><td>Kunci</td></tr>
           {suggestion.result.fields.map(field => <tr key={field.id}><th scope="row">{field.label}</th><td>{suggestion.result.mapping.columns?.[field.id]}</td>
             <td>{csvUnits[field.unit]}{field.scale === 'fraction' ? ' (0–1)' : field.scale === 'percentage' ? ' (0–100)' : ''}{!field.public ? ' · Privat' : ''}</td></tr>)}</tbody>
         </table></div>
-        {suggestion.result.definition && <p>Usulan mengganti kolom dan komponen untuk sumber {slots.find(slot => slot.id === suggestion.slot)?.label}.</p>}
+        {widgetSummary.length > 0 && <div className="form-stack">
+          <h3>Komponen dashboard yang disiapkan</h3>
+          <div className="ai-widget-pills">{widgetSummary.map(([name, count]) => <span className="tag" key={name}><i aria-hidden="true" />{count} {name}</span>)}</div>
+        </div>}
+        {suggestion.result.definition && <p>Usulan langsung menyiapkan kolom serta komponen kartu, grafik, dan tabel untuk sumber {slots.find(slot => slot.id === suggestion.slot)?.label}.</p>}
         {Boolean(suggestion.result.recommendations?.length) && <div className="form-stack"><h3>Rekomendasi tampilan</h3>{suggestion.result.recommendations?.map(message => <p key={message}>{message}</p>)}</div>}
         {suggestion.result.warnings.map(message => <p key={message}>{message}</p>)}
         <div className="actions">
@@ -391,7 +415,14 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
     </section>}
     {(error || success || job) && <section className="panel studio-panel" aria-live="polite">
       <div className="panel-heading"><div><h2>Hasil pemeriksaan</h2>{job && <p>{conditionDate(job.date)} · {job.time} WIB</p>}</div></div>
-      {error && <Alert>{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}
+      {error && <Alert>{error}</Alert>}
+      {success && <Alert tone="success">{success}
+        <div className="actions">
+          <button type="button" className="text-button" onClick={() => setQuery({ tab: 'preview' })}>Buka Pratinjau penuh</button>
+          {detail.canManage && <button type="button" className="text-button" onClick={() => setQuery({ tab: 'editor' })}>Poles di Editor</button>}
+          {detail.canManage && <button type="button" className="text-button" onClick={() => setQuery({ tab: 'access' })}>Terbitkan & akses</button>}
+        </div>
+      </Alert>}
       {processing && <Alert tone="info">Worker sedang memeriksa berkas. Anda dapat membuka kembali pekerjaan ini dari riwayat unggahan.</Alert>}
       {job?.errors.map((item, index) => <Alert key={index}>{item.location && <b>{item.location} · </b>}{item.message}</Alert>)}
       {job?.warnings.map((item, index) => <Alert key={index} tone="info">{item.message}</Alert>)}
@@ -428,6 +459,17 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       </button>) : <p className="empty-inline">Belum ada pekerjaan unggahan.</p>}</div>
     </section>
     </div>
+    {hasRealPreview && <section ref={previewRef} className="panel studio-panel wide upload-preview" aria-label="Pratinjau dashboard">
+      <div className="source-heading">
+        <div><h2>Pratinjau dashboard</h2><p>Data sudah masuk ke draf. Tinjau kartu, grafik, dan tabel di bawah, lalu poles di Editor atau langsung terbitkan.</p></div>
+        <div className="actions">
+          <button type="button" className="button" onClick={() => setQuery({ tab: 'preview' })}><Eye size={15} aria-hidden="true" /> Pratinjau penuh</button>
+          {detail.canManage && <button type="button" className="button" onClick={() => setQuery({ tab: 'editor' })}><Settings size={15} aria-hidden="true" /> Poles di Editor</button>}
+          {detail.canManage && <button type="button" className="button primary" onClick={() => setQuery({ tab: 'access' })}><Globe size={15} aria-hidden="true" /> Terbitkan & akses</button>}
+        </div>
+      </div>
+      <DraftPreview detail={detail} inline />
+    </section>}
     {(tableSources.length > 0 || detail.draft.datasets.some(dataset => dataset.join)) && <SourceWorkbench detail={detail} sources={tableSources} mappings={mappings}
       locked={closed || busy || suggesting || processing || draftPending} save={saveFromTable} />}
     {analysis && <CsvAnalysisDialog progress={analysis} open={showAnalysis} onClose={() => {

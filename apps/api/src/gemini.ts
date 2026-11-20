@@ -77,7 +77,10 @@ function safeColumns(profile: Profile, withPerson = false) {
   return profile.columns.filter(column =>
     column.header.length > 0 && column.header.length <= 120 &&
     profile.columns.filter(candidate => candidate.header === column.header).length === 1 &&
-    (column.person ? withPerson : column.region && column.explicitRegion || !/\b(nik|nkk|nip|npwp|kk|nisn|nama|name|alamat|address|tanggal lahir|birth|nomor|no|telepon|telp|phone|hp|email|surel|latitude|longitude|koordinat|gps|password|sandi|id)\b/i.test(column.header.replace(/[_-]/g, ' '))) &&
+    (column.person ? withPerson :
+      (withPerson && column.identityCandidate) ||
+      (column.region && column.explicitRegion) ||
+      !/\b(nik|nkk|nip|npwp|kk|nisn|nama|name|alamat|address|tanggal lahir|birth|nomor|no|telepon|telp|phone|hp|email|surel|latitude|longitude|koordinat|gps|password|sandi|id)\b/i.test(column.header.replace(/[_-]/g, ' '))) &&
     !/[@<>\r\n]|\d{7,}/.test(column.header))
 }
 
@@ -153,29 +156,57 @@ function designDraft(result: z.infer<typeof designSchema>, columns: Column[], de
 function recommendWidgets(design: ReturnType<typeof designDraft>, result: z.infer<typeof designSchema>, data: DatasetData) {
   const { dataset, widgets, existing, nextId, fieldsByColumn } = design
   const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+  const people = dataset.grain === 'person'
   const progressWidgets = widgets.filter(widget => widget.type === 'progress')
-  const progress = progressWidgets.filter(widget => data.rows.every(row => {
-    const actual = row.values[widget.field!], target = row.values[widget.target!]
-    return valid(actual) && valid(target) && actual >= 0 && actual <= target
-  }))
-  const tables = widgets.filter(widget => widget.type === 'table')
-  const notes: string[] = []
-  if (dataset.grain === 'person') {
-    const rate = dataset.fields.find(field => field.public && field.unit === 'percent' && /progres|progress|capaian|penyelesaian/i.test(field.label))
-    const pair = progressWidgets.find(widget => data.rows.some(row => {
+  const progress = progressWidgets.filter(widget => people
+    ? data.rows.some(row => {
       const actual = row.values[widget.field!], target = row.values[widget.target!]
       return valid(actual) && valid(target) && actual >= 0 && target > 0
+    })
+    : data.rows.every(row => {
+      const actual = row.values[widget.field!], target = row.values[widget.target!]
+      return valid(actual) && valid(target) && actual >= 0 && actual <= target
     }))
-    const group = rate ? { field: rate.id } : pair ? { field: pair.field!, target: pair.target } : undefined
+  const tables = widgets.filter(widget => widget.type === 'table').map(table => people ? table : {
+    ...table,
+    provinceFooter: {
+      enabled: true,
+      rules: Object.fromEntries((table.fields ?? []).map(id => {
+        const field = dataset.fields.find(item => item.id === id)
+        return [id, { op: field?.unit === 'count' ? 'sum' as const : 'none' as const }]
+      })),
+    },
+  })
+  const notes: string[] = []
+  const cards: Widget[] = [...progress]
+  const usedInCards = new Set(progress.flatMap(widget => [widget.field, widget.target].filter(Boolean) as string[]))
+  const rateField = dataset.fields.find(field => field.public && field.unit === 'percent' && /progres|progress|capaian|penyelesaian/i.test(field.label))
+    ?? (people ? dataset.fields.find(field => field.public && field.unit === 'percent' && data.rows.some(row => valid(row.values[field.id]))) : undefined)
+
+  if (people) {
+    const group = rateField ? { field: rateField.id } : progress[0] ? { field: progress[0].field!, target: progress[0].target } : undefined
     if (group && tables[0]) {
       tables[0] = { ...tables[0], title: 'Progres petugas', progressGroup: group }
-      notes.push('Gunakan tabel petugas dengan kelompok 100% atau lebih, 50%–<100%, dan di bawah 50%. Progres kosong dipisahkan.')
+      notes.push('Tabel petugas dikelompokkan ke 100% atau lebih, 50%–<100%, di bawah 50%, dan belum ada angka.')
     } else if (tables.length) {
-      notes.push('Tabel direkomendasikan untuk rincian per orang. Pilih kolom persen atau aktual dan target di Editor untuk mengelompokkan progres.')
+      notes.push('Tabel rincian per individu disiapkan. Pilih kolom persen atau aktual dan target di Editor jika ingin mengelompokkan progres.')
     }
-    return { widgets: [...existing, ...tables].slice(0, 24), notes }
+    if (!cards.length && rateField && data.rows.some(row => valid(row.values[rateField.id]))) {
+      cards.push({ id: nextId('progres'), type: 'progress', title: `Rata-rata ${rateField.label}`, dataset: dataset.id, field: rateField.id, width: 'third', version: 1 })
+      usedInCards.add(rateField.id)
+    }
   }
-  let chart: Widget | undefined
+
+  const kpiCandidates = dataset.fields.filter(field =>
+    field.public && (field.unit === 'count' || field.unit === 'number') &&
+    !usedInCards.has(field.id) &&
+    data.rows.some(row => valid(row.values[field.id])))
+  for (const field of kpiCandidates.slice(0, Math.max(0, 3 - cards.length))) {
+    cards.push({ id: nextId('kpi'), type: 'kpi', title: field.label, dataset: dataset.id, field: field.id, width: 'third', version: 1 })
+    usedInCards.add(field.id)
+  }
+
+  let donut: Widget | undefined
   if (result.composition) {
     const parts = result.composition.parts.flatMap(index => fieldsByColumn.get(index) ?? [])
     const total = fieldsByColumn.get(result.composition.total)
@@ -189,28 +220,56 @@ function recommendWidgets(design: ReturnType<typeof designDraft>, result: z.infe
       const sums = parts.map(part => data.rows.reduce((sum, row) => sum + Number(row.values[part.id]), 0))
       const whole = sums.reduce((sum, part) => sum + part, 0)
       if (sums.every(sum => sum > 0) && (Math.max(...sums) - Math.min(...sums)) / whole >= .05) {
-        chart = { id: nextId('komposisi'), dataset: dataset.id, type: 'donut', fields: [...distinct], title: 'Komposisi ' + dataset.label, width: 'half', version: 1 }
-        notes.push(`Donat menampilkan ${parts.length} kategori yang jumlahnya sama dengan total pada setiap baris.`)
+        donut = { id: nextId('komposisi'), dataset: dataset.id, type: 'donut', fields: [...distinct], title: 'Komposisi ' + dataset.label, width: 'half', version: 1 }
+        notes.push(`Diagram donat menampilkan ${parts.length} kategori yang jumlahnya sama dengan total pada setiap baris.`)
       }
     }
-    if (!chart) notes.push(`Donat tidak disarankan. Komposisi perlu 2–${donutCategoryLimit} kategori berbeda yang membentuk satu total dan mudah dibedakan.`)
+    if (!donut) notes.push(`Diagram donat dilewati karena komposisi perlu 2–${donutCategoryLimit} kategori berbeda yang membentuk satu total.`)
   }
-  if (!chart && data.rows.length >= 2 && data.rows.length <= singleBarLimit) {
+
+  let bars: Widget | undefined
+  if (data.rows.length >= 2) {
     const fields = dataset.fields.filter(field => field.public && isNumericUnit(field.unit))
-    const ranked = progress.flatMap(widget => data.rows.every(row => Number(row.values[widget.target!]) > 0) ? [{ field: widget.field!, target: widget.target }] : [])
-    const candidates = [...ranked, ...fields.map(field => ({ field: field.id, target: undefined }))]
+    const ranked = progress.flatMap(widget => (people
+      ? data.rows.some(row => valid(row.values[widget.field!]) && valid(row.values[widget.target!]) && Number(row.values[widget.target!]) > 0)
+      : data.rows.every(row => Number(row.values[widget.target!]) > 0))
+      ? [{ field: widget.field!, target: widget.target }] : [])
+    const preferred = rateField ? [{ field: rateField.id, target: undefined }] : []
+    const candidates = [...ranked, ...preferred, ...fields.map(field => ({ field: field.id, target: undefined }))]
     const comparison = candidates.find(({ field, target }) => {
-      const values = data.rows.map(row => row.values[field])
-      return values.every(valid) && new Set(values.map((value, index) => target ? value / Number(data.rows[index].values[target]) : value)).size > 1
+      const scores = data.rows.flatMap(row => {
+        const val = row.values[field]
+        const goal = target ? row.values[target] : undefined
+        if (!valid(val)) return []
+        if (target) return valid(goal) && goal > 0 ? [val / goal] : []
+        return [val]
+      })
+      return scores.length >= 2 && new Set(scores).size > 1
     })
     if (comparison) {
-      chart = { ...comparison, id: nextId('perbandingan'), dataset: dataset.id, type: 'bars', title: 'Perbandingan antarwilayah', width: 'half', version: 1 }
-      notes.push(`Grafik batang dapat menampilkan seluruh ${data.rows.length} wilayah sekaligus.`)
+      const entity = people ? 'petugas' : 'wilayah'
+      const title = people
+        ? (data.rows.length > singleBarLimit ? 'Peringkat teratas petugas' : 'Perbandingan petugas')
+        : (data.rows.length > singleBarLimit ? 'Peringkat wilayah teratas' : 'Perbandingan antarwilayah')
+      bars = { ...comparison, id: nextId('perbandingan'), dataset: dataset.id, type: 'bars', title, width: 'half', version: 1 }
+      notes.push(data.rows.length > singleBarLimit
+        ? `Grafik batang menampilkan ${singleBarLimit} ${entity} teratas dari ${data.rows.length} ${entity}; klik ikon perbesar untuk melihat seluruh daftar.`
+        : `Grafik batang membandingkan seluruh ${data.rows.length} ${entity} sekaligus.`)
     }
   }
-  if (!chart && data.rows.length > singleBarLimit && tables.length) notes.push(`Tabel menampilkan seluruh ${data.rows.length} wilayah. Grafik batang ringkas hanya memuat hingga ${singleBarLimit} wilayah.`)
-  const charts = chart && existing.length + progress.length + tables.length < 24 ? [chart] : []
-  return { widgets: [...existing, ...progress, ...charts, ...tables].slice(0, 24), notes }
+
+  if (bars && donut) {
+    bars = { ...bars, width: 'two-thirds' }
+    donut = { ...donut, width: 'third' }
+  } else if (bars) {
+    bars = { ...bars, width: 'full' }
+  } else if (donut) {
+    donut = { ...donut, width: 'full' }
+  }
+
+  const charts = [bars, donut].filter((item): item is Widget => Boolean(item))
+  const budget = Math.max(0, 24 - existing.length - cards.length - tables.length)
+  return { widgets: [...existing, ...cards, ...charts.slice(0, budget), ...tables].slice(0, 24), notes }
 }
 
 export async function suggestCsv(options: DraftOptions, fetcher: typeof fetch = fetch) {
@@ -218,12 +277,18 @@ export async function suggestCsv(options: DraftOptions, fetcher: typeof fetch = 
   if (!key) fail(503, 'AI_DISABLED', 'Gemini belum dikonfigurasi. Gunakan pemetaan manual.')
   options.onProgress?.('reading')
   const profile = profileAnalysisFile(options.file, { sheet: options.sheet, headerRow: options.headerRow, stopRow: options.stopRow }, options.identity)
-  const person = options.dataset.grain === 'person' || (options.design && profile.columns.some(column => column.person) && !profile.columns.some(column => column.region && column.uniqueRegions && column.explicitRegion))
+  const hasValidRegion = profile.columns.some(column => column.region && column.uniqueRegions)
+  const hasExplicitRegion = profile.columns.some(column => column.region && column.uniqueRegions && column.explicitRegion)
+  const hasPerson = profile.columns.some(column => column.person)
+  const hasIdentityCandidate = profile.columns.some(column => column.identityCandidate)
+  const person = options.dataset.grain === 'person' || (options.design && ((hasPerson && !hasExplicitRegion) || (!hasValidRegion && (hasPerson || hasIdentityCandidate))))
   const columns = safeColumns(profile, person)
   const identity = options.identity?.trim().toLowerCase().replace(/\s+/g, ' ')
-  const regionColumns = columns.filter(column => person ? column.person && (!identity || column.header === identity) : column.region)
-  if (!regionColumns.length) fail(422, 'AI_REGION', person ? 'Tidak menemukan kolom nama atau kode petugas. Lengkapi pemetaan identitas dan coba lagi.' : 'Tidak ditemukan kolom kabupaten/kota Sumatera Barat. Periksa baris judul atau pilih tingkat data Per orang di Editor.')
-  const safe = columns.filter(column => !column.person && (column.kind !== 'category' || column.region))
+  const explicitPersonColumns = columns.filter(column => column.person && (!identity || column.header === identity))
+  const fallbackIdentityColumns = columns.filter(column => (column.person || column.identityCandidate) && (!identity || column.header === identity))
+  const regionColumns = person ? (explicitPersonColumns.length ? explicitPersonColumns : fallbackIdentityColumns) : columns.filter(column => column.region)
+  if (!regionColumns.length) fail(422, 'AI_REGION', person ? 'Tidak menemukan kolom identitas individu atau petugas yang unik. Lengkapi pemetaan identitas dan coba lagi.' : 'Tidak ditemukan kolom wilayah Sumatera Barat maupun kolom identitas individu yang unik. Periksa baris judul atau isi kolom identitas di Pemetaan berkas.')
+  const safe = columns.filter(column => !column.person && !(person && regionColumns.some(item => item.index === column.index)) && (column.kind !== 'category' || column.region))
   const omitted = profile.columns.filter(column => !columns.includes(column)).length
   const schema = options.design ? designSchema : mappingSchema
   const expected = activeFields(options.dataset).filter(field => !field.derived && !field.formula)

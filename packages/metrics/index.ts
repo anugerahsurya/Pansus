@@ -65,7 +65,7 @@ export function indicator(data: DatasetData, dataset: Dataset, field: string, ta
     const ratio = aggregate(data, field, { op: 'ratioOfSums', numerator: field, denominator: target })
     return { ...ratio, actual: aggregate(data, field).value, target: aggregate(data, target).value, percent: true }
   }
-  const rule: Rule = unit === 'percent' ? { op: 'reportedValue' } : { op: 'sum' }
+  const rule: Rule = unit === 'percent' ? (dataset.grain === 'person' ? { op: 'mean' } : { op: 'reportedValue' }) : { op: 'sum' }
   const metric = aggregate(data, field, rule)
   return { ...metric, actual: null, target: null, percent: unit === 'percent' }
 }

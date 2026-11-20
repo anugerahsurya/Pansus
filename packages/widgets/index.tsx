@@ -55,10 +55,10 @@ function CardDetails({ title, dataset, report, children }: { title: string; data
   </>
 }
 
-function DetailTable({ columns, rows }: { columns: string[]; rows: { code: string; name: string; values: string[] }[] }) {
-  if (!rows.length) return <p className="empty-inline">Data wilayah belum tersedia.</p>
-  return <div className="table-scroll" tabIndex={0} role="region" aria-label="Angka per kabupaten atau kota">
-    <table><thead><tr><th scope="col">Kabupaten / Kota</th>{columns.map((label, index) => <th scope="col" key={index}>{label}</th>)}</tr></thead>
+function DetailTable({ columns, rows, rowHeader = 'Kabupaten / Kota', emptyMessage = 'Data wilayah belum tersedia.' }: { columns: string[]; rows: { code: string; name: string; values: string[] }[]; rowHeader?: string; emptyMessage?: string }) {
+  if (!rows.length) return <p className="empty-inline">{emptyMessage}</p>
+  return <div className="table-scroll" tabIndex={0} role="region" aria-label={`Angka per ${rowHeader.toLowerCase()}`}>
+    <table><thead><tr><th scope="col">{rowHeader}</th>{columns.map((label, index) => <th scope="col" key={index}>{label}</th>)}</tr></thead>
       <tbody>{rows.map(row => <tr key={row.code}><th scope="row">{row.name}</th>{row.values.map((value, index) => <td key={index}>{value}</td>)}</tr>)}</tbody>
     </table>
   </div>
@@ -81,6 +81,10 @@ function Metric({ widget, dataset, report, print }: { widget: Widget; dataset: D
       const day = pesRegions.find(entry => entry[0] === row.code)?.[4]
       return day ? [{ target: Number(row.values.target ?? 0), deadline: `2026-11-${day}` }] : []
     }), report.condition.date, pesPace.start, pesPace.offsets[stage]) : null
+  const people = dataset.grain === 'person'
+  const entity = people ? 'petugas' : 'wilayah'
+  const rowHeader = people ? 'Nama atau kode petugas' : 'Kabupaten / Kota'
+  const emptyMessage = people ? 'Data petugas belum tersedia.' : 'Data wilayah belum tersedia.'
   return <article className={'panel metric' + metricColor}>
     <div className="metric-head"><div><span className="metric-label">{dataset.label}</span><h3>{widget.title}</h3></div>
       {!print && <CardDetails title={widget.title} dataset={dataset} report={report}>{() => {
@@ -93,11 +97,11 @@ function Metric({ widget, dataset, report, print }: { widget: Widget; dataset: D
             <div><dt>H−1{previous && ` · ${conditionDate(previousDay(report.condition.date))}`}</dt><dd>{shown(h1, result.percent ? 'percent' : 'number')}</dd></div>
             <div><dt>Perubahan H−1</dt><dd>{deltaLabel}</dd></div>
           </dl>
-          <p>{target ? `Cara hitung: jumlah ${label} dibagi jumlah ${fieldLabel(dataset, target)} pada wilayah dengan kedua angka tersedia.` :
-            result.percent ? 'Angka provinsi memakai rekap resmi dari sumber. Tabel menampilkan angka tiap wilayah.' : `Cara hitung: jumlah ${label} dari wilayah yang memiliki nilai.`}</p>
+          <p>{target ? `Cara hitung: jumlah ${label} dibagi jumlah ${fieldLabel(dataset, target)} pada ${entity} dengan kedua angka tersedia.` :
+            result.percent ? (people ? 'Cara hitung: rata-rata dari seluruh petugas yang memiliki nilai.' : 'Angka provinsi memakai rekap resmi dari sumber. Tabel menampilkan angka tiap wilayah.') : `Cara hitung: jumlah ${label} dari ${entity} yang memiliki nilai.`}</p>
           {change.value == null && <p>{change.reason === 'Kondisi H−1 belum tersedia.' ? report.baselineReason ?? change.reason : change.reason}</p>}
           {pace !== null && <p>Target waktu {pct.format(pace)} dihitung dari tenggat masing-masing wilayah, dengan bobot sesuai target penugasan.</p>}
-          <DetailTable columns={target ? [label, fieldLabel(dataset, target), 'Capaian'] : [label]} rows={data.rows.map(row => {
+          <DetailTable rowHeader={rowHeader} emptyMessage={emptyMessage} columns={target ? [label, fieldLabel(dataset, target), 'Capaian'] : [label]} rows={data.rows.map(row => {
             const actual = row.values[widget.field!]
             const goal = target ? row.values[target] : null
             const values = [shown(actual, field?.unit)]
@@ -109,7 +113,7 @@ function Metric({ widget, dataset, report, print }: { widget: Widget; dataset: D
     </div>
     <div className="metric-amount"><strong>{shown(value, result.percent ? 'percent' : 'number')}</strong><span className={'delta ' + (change.value == null ? 'delta-none' : change.value < 0 ? 'delta-down' : 'delta-up')} title={change.value == null ? report.baselineReason ?? change.reason ?? '' : 'Perubahan sejak kondisi H−1'}>{change.value != null && (change.value < 0 ? <ArrowDown size={12} /> : <ArrowUp size={12} />)} {deltaLabel}</span></div>
     {widget.type === 'progress' && <div className="progress-track" aria-hidden="true"><span className="chart-fill" style={{ transform: `scaleX(${Math.max(0, Math.min(1, ratio ?? 0))})` }} /></div>}
-    <div className="metric-foot">{widget.target ? <span><b>{shown(result.actual)}</b> dari {shown(result.target)} target</span> : <span>{result.reason ?? `${result.coverage} wilayah tercatat`}</span>}<span>vs. H−1</span></div>
+    <div className="metric-foot">{widget.target ? <span><b>{shown(result.actual)}</b> dari {shown(result.target)} target</span> : <span>{result.reason ?? `${result.coverage} ${entity} tercatat`}</span>}<span>vs. H−1</span></div>
     {pace !== null && <div className="metric-foot pace" title={ratio != null && ratio >= pace ? 'Mencapai target waktu' : 'Di bawah target waktu'}><span>Target waktu</span><b>{pct.format(pace)}</b></div>}
   </article>
 }
@@ -132,11 +136,15 @@ function Bars({ widget, dataset, report, print }: { widget: Widget; dataset: Dat
   const low = rows.reduce((value, row) => Math.min(value, ...row.bars.map(bar => bar ?? 0)), 0)
   const range = high - low || 1
   const zero = (0 - low) / range * 100
+  const people = dataset.grain === 'person'
+  const entity = people ? 'petugas' : 'wilayah'
+  const rowHeader = people ? 'Nama atau kode petugas' : 'Kabupaten / Kota'
+  const emptyMessage = people ? 'Data petugas belum tersedia.' : 'Data wilayah belum tersedia.'
   return <article className="panel chart bars-panel">
     <div className="chart-title"><div><h3>{widget.title}</h3>{widget.description && <p>{widget.description}</p>}</div>
       {!print && <CardDetails title={widget.title} dataset={dataset} report={report}>{() => <>
-        <p>{widget.target ? `Angka tiap wilayah dihitung dengan membagi indikator dengan ${fieldLabel(dataset, widget.target)}. Wilayah tanpa target positif ditandai kosong.` : 'Batang membandingkan nilai yang tercatat di setiap wilayah.'}</p>
-        <DetailTable columns={series.map(item => item.label)} rows={sorted.map(row => ({ ...row, values: row.bars.map(value => shown(value, unit)) }))} />
+        <p>{widget.target ? `Angka tiap ${entity} dihitung dengan membagi indikator dengan ${fieldLabel(dataset, widget.target)}. ${people ? 'Petugas' : 'Wilayah'} tanpa target positif ditandai kosong.` : `Batang membandingkan nilai yang tercatat di setiap ${entity}.`}</p>
+        <DetailTable rowHeader={rowHeader} emptyMessage={emptyMessage} columns={series.map(item => item.label)} rows={sorted.map(row => ({ ...row, values: row.bars.map(value => shown(value, unit)) }))} />
       </>}</CardDetails>}
     </div>
     {series.length > 1 && <div className="series-legend">{series.map(item => <span key={item.id}><i style={{ background: item.color }} />{item.label}</span>)}</div>}
@@ -150,8 +158,8 @@ function Bars({ widget, dataset, report, print }: { widget: Widget; dataset: Dat
             <i className="chart-fill" style={{ transform: `translateX(${offset}%) scaleX(${size})`, background: series[index].color }} />
           </span><b>{shown(bar, unit)}</b></div>
       })}
-    </div>)}</div> : <p className="empty-inline">Data wilayah belum tersedia.</p>}
-    {visible.length < sorted.length && <p className="chart-caption">{visible.length} dari {sorted.length} wilayah, diurutkan menurut {series[0].label}.</p>}
+    </div>)}</div> : <p className="empty-inline">{emptyMessage}</p>}
+    {visible.length < sorted.length && <p className="chart-caption">{visible.length} dari {sorted.length} {entity}, diurutkan menurut {series[0].label}.</p>}
   </article>
 }
 
@@ -164,7 +172,7 @@ function Donut({ widget, dataset, report, print }: { widget: Widget; dataset: Da
     <div className="chart-title"><div><h3>{widget.title}</h3><p>{widget.description || `Komposisi ${dataset.label}`}</p></div>
       {!print && <CardDetails title={widget.title} dataset={dataset} report={report}>{() => <>
         <p>Persentase membagi jumlah tiap status dengan total seluruh status yang ditampilkan.</p>
-        <DetailTable columns={stats.map(item => item.label)} rows={data.rows.map(row => ({ ...row, values: stats.map(item => shown(row.values[item.id])) }))} />
+        <DetailTable rowHeader={dataset.grain === 'person' ? 'Nama atau kode petugas' : 'Kabupaten / Kota'} emptyMessage={dataset.grain === 'person' ? 'Data petugas belum tersedia.' : 'Data wilayah belum tersedia.'} columns={stats.map(item => item.label)} rows={data.rows.map(row => ({ ...row, values: stats.map(item => shown(row.values[item.id])) }))} />
       </>}</CardDetails>}
     </div>
     <div className="donut-body">

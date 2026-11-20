@@ -36,7 +36,8 @@ test('Gemini menganalisis lembar XLSX dan XLS dengan persen Excel yang tersimpan
     })
     assert.equal(suggestion.mapping.sheet, 'Progres Petugas')
     assert.equal(suggestion.mapping.headerRow, 2)
-    assert.equal(suggestion.definition?.widgets[0].progressGroup?.field, 'kolom_2')
+    assert.deepEqual(suggestion.definition?.widgets.map(widget => widget.type), ['progress', 'bars', 'table'])
+    assert.equal(suggestion.definition?.widgets.find(widget => widget.type === 'table')?.progressGroup?.field, 'kolom_2')
     const dataset = suggestion.definition!.datasets[0]
     assert.equal(dataset.fields[0].scale, 'fraction')
     assert.equal(dataset.fields[1].unit, 'datetime')
@@ -108,12 +109,11 @@ test('draf CSV membatasi data yang dikirim dan menjaga unit serta akses kolom', 
   assert.deepEqual(second.definition?.datasets[0], output.datasets[0])
   assert.deepEqual(second.definition?.datasets[1].fields.map(field => field.label), ['target', 'terverifikasi'])
   assert.deepEqual(second.definition?.widgets.slice(0, 2), output.widgets)
-  assert.deepEqual(second.definition?.widgets[2], {
-    id: 'tabel_2', type: 'table', version: 1, width: 'full', title: 'Rincian Validasi', dataset: 'validasi', fields: ['kolom_2', 'kolom_3'],
-  })
+  assert.deepEqual(second.definition?.widgets.slice(2).map(widget => widget.type), ['kpi', 'kpi', 'table'])
+  assert.equal(second.definition?.widgets.at(-1)?.title, 'Rincian Validasi')
 })
 
-test('rekomendasi mempertimbangkan banyak wilayah, banyak kategori, dan 100 petugas', async () => {
+test('rekomendasi menyusun kartu, grafik, dan tabel untuk banyak wilayah, komposisi, serta data individu non-wilayah', async () => {
   process.env.GEMINI_API_KEY = 'uji-unit'
   const definition = templateDefinition('custom')
   const base = { definition, dataset: definition.datasets[0], template: 'custom' as const, design: true, expectedRevision: 1 }
@@ -124,13 +124,13 @@ test('rekomendasi mempertimbangkan banyak wilayah, banyak kategori, dan 100 petu
   }, async () => response({ region: 0, fields: [], progress: [], composition: { total: 1, parts } }))
 
   const crowded = await run(7, [2, 3, 4, 5, 6, 7])
-  assert.deepEqual(crowded.definition?.widgets.map(widget => widget.type), ['table'])
+  assert.deepEqual(crowded.definition?.widgets.map(widget => widget.type), ['kpi', 'kpi', 'kpi', 'bars', 'table'])
   assert.ok(crowded.recommendations?.some(note => note.includes('7 wilayah')))
-  assert.deepEqual((await run(3, [2, 3, 4, 5, 6, 7])).definition?.widgets.map(widget => widget.type), ['bars', 'table'])
+  assert.deepEqual((await run(3, [2, 3, 4, 5, 6, 7])).definition?.widgets.map(widget => widget.type), ['kpi', 'kpi', 'kpi', 'bars', 'table'])
   const composition = await suggestCsv({
     ...base, file: file('wilayah,total,belum,sedang,selesai\n1303,10,1,2,7\n1371,20,2,6,12'),
   }, async () => response({ region: 0, fields: [], progress: [], composition: { total: 1, parts: [2, 3, 4] } }))
-  assert.deepEqual(composition.definition?.widgets.map(widget => widget.type), ['donut', 'table'])
+  assert.deepEqual(composition.definition?.widgets.map(widget => widget.type), ['kpi', 'kpi', 'kpi', 'bars', 'donut', 'table'])
 
   const people = ['nama petugas,progres (%)', ...Array.from({ length: 100 }, (_, i) => `Petugas Uji ${i + 1},${['100%', '50%', '49%', ''][i % 4]}`)].join('\n')
   const suggested = await suggestCsv({ ...base, file: file(people) }, async (_url, request) => {
@@ -139,6 +139,16 @@ test('rekomendasi mempertimbangkan banyak wilayah, banyak kategori, dan 100 petu
   })
   assert.equal(suggested.grain, 'person')
   assert.equal(suggested.rows, 100)
-  assert.deepEqual(suggested.definition?.widgets.map(widget => widget.type), ['table'])
-  assert.deepEqual(suggested.definition?.widgets[0].progressGroup, { field: 'kolom_2' })
+  assert.deepEqual(suggested.definition?.widgets.map(widget => widget.type), ['progress', 'bars', 'table'])
+  assert.deepEqual(suggested.definition?.widgets.find(widget => widget.type === 'table')?.progressGroup, { field: 'kolom_2' })
+
+  const customIdentity = ['kode akun,target,selesai\nAKUN01,10,8\nAKUN02,10,5\nAKUN03,10,10'].join('\n')
+  const individual = await suggestCsv({ ...base, file: file(customIdentity) }, async (_url, request) => {
+    assert.doesNotMatch(String(request?.body), /AKUN01|kode akun/)
+    return response({ region: 0, fields: [{ column: 1, unit: 'count' }, { column: 2, unit: 'count' }], progress: [{ actual: 2, target: 1 }] })
+  })
+  assert.equal(individual.grain, 'person')
+  assert.equal(individual.rows, 3)
+  assert.equal(individual.mapping.region, 'kode akun')
+  assert.deepEqual(individual.definition?.widgets.map(widget => widget.type), ['progress', 'bars', 'table'])
 })
