@@ -35,7 +35,7 @@ export function Reader({ demo = false }: { demo?: boolean }) {
     finally { setBusy(false) }
   }
   return <>
-    <Breadcrumb parts={[user ? { label: 'Portal pembaca', to: '/katalog' } : 'Dashboard terbit', demo ? 'Ringkasan contoh' : report?.definition.title ?? 'Dashboard kegiatan']} />
+    {demo && <Breadcrumb parts={[user ? { label: 'Portal pembaca', to: '/katalog' } : 'Dashboard terbit', 'Ringkasan contoh']} />}
     {request.loading && !report && <Loading />}
     {request.error && <div className="panel state-panel"><Alert>{request.error}</Alert><div className="actions"><button className="button" onClick={request.reload}>Coba lagi</button><Link className="button" to={'/masuk?' + new URLSearchParams({ lanjut: `/d/${slug}${release ? '?' + new URLSearchParams({ release }) : ''}` })}>Masuk dengan akun undangan</Link>{user && <Link to="/katalog" className="button subtle">Buka katalog kegiatan</Link>}</div></div>}
     {report && <>
@@ -76,7 +76,7 @@ export function ShareExchange() {
     window.history.replaceState(null, '', '/bagikan')
     const [slug, secret] = fragment.split('.')
     if (!slug || !secret) { setError('Tautan tidak lengkap.'); return }
-    api<{ slug: string }>('/share/exchange', 'POST', { slug, secret }).then(data => navigate(`/d/${data.slug}`, { replace: true }), error => setError(error.message))
+    api<{ slug: string }>('/share/exchange', 'POST', { slug, secret }).then(data => navigate(`/${data.slug}`, { replace: true }), error => setError(error.message))
   }, [navigate])
   return <>{error ? <Alert>{error}</Alert> : <Loading />}</>
 }
@@ -95,7 +95,7 @@ export function Catalog() {
     {!loading && !error && !items.length && <div className="panel state-panel">Tidak ada kegiatan yang cocok.</div>}
     <div className="catalog-grid">{items.map(item => <article className="panel catalog-card" key={item.slug}>
       <div className={`catalog-banner theme-${item.theme}`}><BarChart3 size={35} /><span className="catalog-badge">{item.demo ? 'Data sintetis' : item.activityStatus === 'active' ? 'Berjalan' : 'Selesai'}</span></div>
-      <div className="catalog-content"><span className="card-satker"><MapPin size={14} /> {item.satker}</span><h2>{item.title}</h2><p>{item.description}</p><div className="catalog-date"><CalendarDays size={16} /> {conditionDate(item.date)} · {item.time} WIB</div><Link className="button" to={`/d/${item.slug}`}>Buka dashboard <ArrowRight size={16} /></Link></div>
+      <div className="catalog-content"><span className="card-satker"><MapPin size={14} /> {item.satker}</span><h2>{item.title}</h2><p>{item.description}</p><div className="catalog-date"><CalendarDays size={16} /> {conditionDate(item.date)} · {item.time} WIB</div><Link className="button" to={`/${item.slug}`}>Buka dashboard <ArrowRight size={16} /></Link></div>
     </article>)}</div>
   </>
 }

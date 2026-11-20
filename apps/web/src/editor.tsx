@@ -135,10 +135,10 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
     <div className="design-split">
     <section className="panel studio-panel design-editor">
     <div className="page-heading compact-heading"><div><h2>Editor dashboard</h2><p role="status">{status}</p></div><div className="actions">
-      <button className="icon-button" aria-label="Batalkan perubahan terakhir" disabled={!past.length} onClick={undo}><Undo2 size={18} /></button><button className="icon-button" aria-label="Ulangi perubahan terakhir" disabled={!future.length} onClick={redo}><Redo2 size={18} /></button>
-      <button className="button primary" disabled={!dirty || busy} onClick={save}><Save size={16} /> Simpan draf</button></div></div>
+      <button type="button" className="icon-button" aria-label="Batalkan perubahan terakhir" disabled={!past.length} onClick={undo}><Undo2 size={18} /></button><button type="button" className="icon-button" aria-label="Ulangi perubahan terakhir" disabled={!future.length} onClick={redo}><Redo2 size={18} /></button>
+      <button type="button" className="button primary" disabled={!dirty || busy} onClick={save}><Save size={16} /> Simpan draf</button></div></div>
     {error && <Alert>{error}</Alert>}
-    <div className="segmented" aria-label="Bagian editor"><button aria-pressed={section === 'details'} className={section === 'details' ? 'selected' : ''} onClick={() => setSection('details')}>Keterangan umum</button><button aria-pressed={section === 'fields'} className={section === 'fields' ? 'selected' : ''} onClick={() => setSection('fields')}>Kolom data</button><button aria-pressed={section === 'widgets'} className={section === 'widgets' ? 'selected' : ''} onClick={() => setSection('widgets')}>Komponen</button></div>
+    <div className="segmented" aria-label="Bagian editor"><button type="button" aria-pressed={section === 'details'} className={section === 'details' ? 'selected' : ''} onClick={() => setSection('details')}>Keterangan umum</button><button type="button" aria-pressed={section === 'fields'} className={section === 'fields' ? 'selected' : ''} onClick={() => setSection('fields')}>Kolom data</button><button type="button" aria-pressed={section === 'widgets'} className={section === 'widgets' ? 'selected' : ''} onClick={() => setSection('widgets')}>Komponen</button></div>
     {section === 'details' && <section className="form-stack" aria-label="Keterangan umum">
       <label>Judul kegiatan<input value={draft.title} maxLength={100} onChange={event => change({ ...draft, title: event.target.value })} /></label>
       <label>Deskripsi<textarea value={draft.description} maxLength={300} onChange={event => change({ ...draft, description: event.target.value })} /></label>
@@ -168,7 +168,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
         })
       }} /></label>}
       <div className="editor-fields-heading"><h3>Kolom {dataset.label} <small>{dataset.fields.length}/50</small></h3>
-        {!dataset.join && <button className="button" disabled={dataset.fields.length >= 50} onClick={addField}><Plus size={16} /> Tambah kolom</button>}
+        {!dataset.join && <button type="button" className="button" disabled={dataset.fields.length >= 50} onClick={addField}><Plus size={16} /> Tambah kolom</button>}
       </div>
       {detail.template === 'pes' && dataset.id === 'sls' && <label className="check"><input type="checkbox" checked={dataset.publicDetail ?? false} onChange={event => change({ ...draft, datasets: draft.datasets.map(item => item.id === dataset.id ? { ...item, publicDetail: event.target.checked } : item) })} /> Izinkan pembaca membuka rincian kecamatan, desa, dan SLS</label>}
       {dataset.fields.map(field => <FieldEditor key={`${dataset.id}:${field.id}`} field={field} allFields={dataset.fields} dashboard={detail.id} dataset={dataset.id} focus={newField === field.id} removable={dataset.fields.length > 1} configurable={detail.template === 'custom'} fixed={field.derived || detail.template !== 'custom' && !field.id.startsWith('field_')} onChange={next => updateFields(dataset.fields.map(value => value.id === field.id ? next : value))} onRemove={() => {
@@ -218,7 +218,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
           <WidgetEditor widget={current} definition={draft} rows={detail.preview?.data[current.dataset ?? '']?.rows.length} onChange={next => setWidget(current.id, next)} />
         </section>
       })()}
-      <div className="add-widget"><span>Tambah komponen</span><div className="actions">{(Object.keys(widgetLabels) as Widget['type'][]).map(type => <button key={type} className="button" disabled={draft.widgets.length >= 24} onClick={() => addWidget(type)}><Plus size={15} /> {widgetLabels[type]}</button>)}</div></div>
+      <div className="add-widget"><span>Tambah komponen</span><div className="actions">{(Object.keys(widgetLabels) as Widget['type'][]).map(type => <button key={type} type="button" className="button" disabled={draft.widgets.length >= 24} onClick={() => addWidget(type)}><Plus size={15} /> {widgetLabels[type]}</button>)}</div></div>
     </div>}
     </section>
     {active && <section className="design-preview" aria-labelledby="live-preview-title">
@@ -245,7 +245,7 @@ function FieldEditor({ field, allFields, dashboard, dataset, fixed, configurable
   return <details className="editor-item editor-field" open={focus || undefined}>
     <summary>{field.label} <small>{field.enabled === false ? 'Tidak dipakai' : units[field.unit]}</small></summary>
     <div className="editor-item-body form-stack">
-    <div className="field-editor-heading"><code title="ID untuk rumus">&lt;{field.id}&gt;</code>{!fixed && removable && <button className="icon-button danger-text" aria-label={`Hapus ${field.label}`} onClick={onRemove}><Trash2 size={16} /></button>}</div>
+    <div className="field-editor-heading"><code title="ID untuk rumus">&lt;{field.id}&gt;</code>{!fixed && removable && <button type="button" className="icon-button danger-text" aria-label={`Hapus ${field.label}`} onClick={onRemove}><Trash2 size={16} /></button>}</div>
     <label>Nama kolom<input ref={nameInput} value={field.label} maxLength={100} onChange={event => onChange({ ...field, label: event.target.value })} /></label>
     <label>Satuan<Select value={field.unit} disabled={fixed} ariaLabel="Satuan" options={Object.entries(units).map(([key, label]) => ({ value: key, label }))} onChange={value => {
       const unit = value as Field['unit']
@@ -262,7 +262,7 @@ function FieldEditor({ field, allFields, dashboard, dataset, fixed, configurable
           onChange({ ...field, formula: `${field.formula ? `${field.formula} ` : ''}<${item.id}>` })
         }}>&lt;{item.id}&gt; <small>{item.label}</small></button>)}
       </div>}
-      {field.formula && <button className="button subtle" onClick={check}>Periksa rumus</button>}{error && <Alert>{error}</Alert>}{preview && <div className="formula-preview"><p>Kolom terkait {preview.dependencies.map(item => `<${item.label}>`).join(', ') || '—'}</p>{preview.rows.map(row => <p key={row.name}>{row.name} <b>{row.value == null ? '—' : fmt.format(row.value)}</b> {row.reason}</p>)}{!preview.rows.length && <p>Unggah data untuk melihat contoh hasil.</p>}</div>}
+      {field.formula && <button type="button" className="button subtle" onClick={check}>Periksa rumus</button>}{error && <Alert>{error}</Alert>}{preview && <div className="formula-preview"><p>Kolom terkait {preview.dependencies.map(item => `<${item.label}>`).join(', ') || '—'}</p>{preview.rows.map(row => <p key={row.name}>{row.name} <b>{row.value == null ? '—' : fmt.format(row.value)}</b> {row.reason}</p>)}{!preview.rows.length && <p>Unggah data untuk melihat contoh hasil.</p>}</div>}
     </div>}
     </div>
   </details>

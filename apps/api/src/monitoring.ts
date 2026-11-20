@@ -30,6 +30,8 @@ const hasPersonalRows = (definition: Definition) => definition.datasets.some(dat
 function checkPersonalAccess(definition: Definition, visibility: Visibility) {
   if (hasPersonalRows(definition) && visibility === 'public') fail(422, 'PERSONAL_DATA_REQUIRES_INVITES', 'Dashboard yang memuat progres per orang tidak dapat masuk katalog publik. Gunakan tautan berbagi atau undangan.')
 }
+const reservedSlugs = new Set(['api', 'assets', 'd', 'masuk', 'bagikan', 'katalog', 'template', 'panduan', 'profil', 'pengguna', 'studio', 'render', 'health', 'admin', 'auth', 'share', 'dashboards', 'jobs', 'exports', 'internal'])
+export const slugSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Gunakan huruf kecil, angka, dan tanda hubung (-).').min(3, 'Minimal 3 karakter.').max(60, 'Maksimal 60 karakter.').refine(value => !reservedSlugs.has(value), 'Alamat tautan tersebut dicadangkan oleh sistem.')
 const assertOpen = (dashboard: Dashboard) => { if (dashboard.activityStatus === 'closed') fail(409, 'ACTIVITY_CLOSED', 'Kegiatan sudah selesai. Hubungi admin untuk membuka kembali.') }
 const putDashboard = (db: Records, dashboard: Dashboard) => db.put(`dashboard:${dashboard.id}`, dashboard)
 function checkRevision(actual: number, expected: number) {
@@ -672,11 +674,29 @@ export class Monitoring {
     })
   }
 
-  async publish(credentials: Credentials, id: string, expected: number, visibility: Visibility) {
+  private applySlug(db: Records, dashboard: Dashboard, rawSlug?: string) {
+    if (!rawSlug || rawSlug === dashboard.slug) return
+    const parsed = slugSchema.safeParse(rawSlug)
+    if (!parsed.success) fail(422, 'INVALID_SLUG', parsed.error.issues[0].message)
+    const conflict = db.list<Dashboard>('dashboard:').some(item => item.id !== dashboard.id && item.slug === parsed.data)
+    if (conflict) fail(409, 'SLUG_TAKEN', 'Alamat tautan tersebut sudah digunakan dashboard lain. Pilih nama lain.')
+    dashboard.slug = parsed.data
+  }
+  async updateSlug(credentials: Credentials, id: string, slug: string) {
+    return this.store.write(db => {
+      const { user, dashboard } = this.protect(db, credentials, id, true)
+      this.applySlug(db, dashboard, slug)
+      putDashboard(db, dashboard)
+      audit(db, user.id, 'slug', dashboard, { slug: dashboard.slug })
+      return { slug: dashboard.slug }
+    })
+  }
+  async publish(credentials: Credentials, id: string, expected: number, visibility: Visibility, slug?: string) {
     return this.store.write(db => {
       const { user, dashboard } = this.protect(db, credentials, id, true)
       checkRevision(dashboard.draftRevision, expected)
       checkPersonalAccess(dashboard.draft, visibility)
+      this.applySlug(db, dashboard, slug)
       const snapshots = dashboard.snapshotIds.map(item => db.get<Snapshot>(snapshotKey(dashboard, item))!).filter(snapshot => !snapshot.demo)
         .filter(snapshot => snapshot.signature === datasetSignature(dashboard.draft)).sort((a, b) => byCondition(a, b) || a.revision - b.revision)
       if (!snapshots.length) fail(422, 'DATA_REQUIRED', 'Terapkan semua berkas kegiatan dengan definisi saat ini sebelum menerbitkan dashboard.')

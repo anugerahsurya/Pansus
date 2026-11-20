@@ -10,7 +10,7 @@ import { aggregate, sortRows } from '../../../packages/metrics/index'
 import { exampleFiles } from '../../../fixtures/synthetic/index'
 import type { InputFile } from '../../../packages/adapters/index'
 import { fail } from './model'
-import { mappingsSchema, Monitoring, templateCatalog, uploadSchema, type Credentials } from './monitoring'
+import { mappingsSchema, Monitoring, slugSchema, templateCatalog, uploadSchema, type Credentials } from './monitoring'
 import { Exports } from './exports'
 
 export function payload<T>(schema: z.ZodType<T>, input: unknown): T {
@@ -193,8 +193,12 @@ export class ControllerRoutes {
     return this.app.commit(credentials(req), id, input)
   }
   @Post('admin/dashboards/:id/publish') publish(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
-    const input = payload(z.object({ expectedRevision: revision, visibility: visibilitySchema }), body)
-    return this.app.publish(credentials(req), id, input.expectedRevision, input.visibility)
+    const input = payload(z.object({ expectedRevision: revision, visibility: visibilitySchema, slug: slugSchema.optional() }), body)
+    return this.app.publish(credentials(req), id, input.expectedRevision, input.visibility, input.slug)
+  }
+  @Patch('admin/dashboards/:id/slug') updateSlug(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const input = payload(z.object({ slug: slugSchema }), body)
+    return this.app.updateSlug(credentials(req), id, input.slug)
   }
   @Post('admin/dashboards/:id/rollback') rollback(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     const input = payload(z.object({ releaseId: z.uuid(), expectedRevision: revision }), body)

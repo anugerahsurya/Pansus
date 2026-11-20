@@ -28,6 +28,7 @@ function App() {
     <Route path="/masuk" element={<Login />} />
     <Route path="/bagikan" element={<ShareExchange />} />
     <Route path="/d/:slug" element={<Reader />} />
+    <Route path="/:slug" element={<Reader />} />
     <Route element={<RequireSession />}>
       <Route path="/" element={<Reader demo />} />
       <Route path="/katalog" element={<Catalog />} />

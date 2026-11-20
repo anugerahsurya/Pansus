@@ -66,7 +66,6 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
   const [checkingAi, setCheckingAi] = useState(false)
   const [showAnalysis, setShowAnalysis] = useState(false)
   const reviewRef = useRef<HTMLElement>(null)
-  const previewRef = useRef<HTMLElement>(null)
   const [aiError, setAiError] = useState('')
   const [suggestion, setSuggestion] = useState<{ slot: string; result: CsvSuggestion }>()
   const [applied, setApplied] = useState<{ slot: string; designed: boolean }>()
@@ -460,7 +459,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
       </button>) : <p className="empty-inline">Belum ada pekerjaan unggahan.</p>}</div>
     </section>
     </div>
-    {hasRealPreview && <section ref={previewRef} className="panel studio-panel wide upload-preview" aria-label="Pratinjau dashboard">
+    {hasRealPreview && <section className="panel studio-panel wide upload-preview" aria-label="Pratinjau dashboard">
       <div className="source-heading">
         <div><h2>Pratinjau dashboard</h2><p>Data sudah masuk ke draf. Tinjau kartu, grafik, dan tabel di bawah, lalu poles di Editor atau langsung terbitkan.</p></div>
         <div className="actions">

@@ -1,6 +1,6 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowRight, CheckCircle2, ClipboardCheck, ExternalLink, Eye, FileUp, Globe, Link2, Lock, LogOut, Plus, Settings, Users } from 'lucide-react'
+import { ArrowRight, Check, CheckCircle2, ClipboardCheck, ExternalLink, Eye, FileUp, Globe, Link2, Lock, LogOut, Plus, Settings, Users } from 'lucide-react'
 import type { ReleaseSummary, Visibility } from '../../../packages/contracts/index'
 import { api, conditionDate, type DashboardDetail, type DashboardItem } from './api'
 import { Alert, Breadcrumb, Loading, useAuth, useData } from './common'
@@ -37,6 +37,32 @@ function DashboardList({ admin, logout }: { admin: boolean; logout: () => void }
 }
 
 const accessLabels: Record<Visibility, string> = { public: 'Publik', link: 'Siapa pun yang punya tautan', invite: 'Hanya orang yang diundang' }
+function WorkflowTree({ detail, tab, onSelect }: { detail: DashboardDetail; tab: string; onSelect: (tab: string) => void }) {
+  const hasRealData = Boolean(detail.preview && !detail.preview.demo)
+  const hasDesign = detail.draft.widgets.length > 0 && (detail.draftRevision > 1 || detail.draft.title !== 'Dashboard baru')
+  const isPublished = Boolean(detail.activeRelease && !detail.archivedAt)
+  const steps = detail.canManage ? [
+    { id: 'data', label: '1. Unggah & periksa data', done: hasRealData, meta: hasRealData ? `Data masuk · ${conditionDate(detail.preview!.condition.date)}` : 'Belum ada data kegiatan' },
+    { id: 'editor', label: '2. Susun & poles tampilan', done: hasDesign, meta: `${detail.draft.widgets.length} komponen` },
+    { id: 'preview', label: '3. Pratinjau hasil', done: hasRealData && detail.draft.widgets.length > 0, meta: hasRealData ? 'Siap ditinjau' : 'Menunggu data' },
+    { id: 'access', label: '4. Terbitkan & bagikan', done: isPublished, meta: isPublished ? `Terbit · /${detail.slug}` : 'Belum diterbitkan' },
+  ] : [
+    { id: 'data', label: '1. Unggah & periksa data', done: hasRealData, meta: hasRealData ? `Data masuk · ${conditionDate(detail.preview!.condition.date)}` : 'Belum ada data kegiatan' },
+    { id: 'preview', label: '2. Pratinjau hasil', done: hasRealData, meta: hasRealData ? 'Siap ditinjau' : 'Menunggu data' },
+  ]
+  return <ol className="workflow-tree" aria-label="Progres tahapan penerbitan">
+    {steps.map((step, index) => {
+      const current = tab === step.id
+      return <li key={step.id} className="workflow-step" data-done={step.done || undefined} data-current={current || undefined}>
+        <button type="button" className="workflow-node" onClick={() => onSelect(step.id)} aria-current={current ? 'step' : undefined}>
+          <span className="workflow-dot" aria-hidden="true">{step.done ? <Check size={13} /> : index + 1}</span>
+          <span className="workflow-copy"><b>{step.label}</b><small>{step.meta}</small></span>
+        </button>
+      </li>
+    })}
+  </ol>
+}
+
 function Workspace({ id }: { id: string }) {
   const [query, setQuery] = useSearchParams()
   const [editorPending, setEditorPending] = useState(false)
@@ -48,8 +74,9 @@ function Workspace({ id }: { id: string }) {
     {loading && !data && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
     {data && <>
       <div className="page-heading"><div><h1>{data.draft.title}</h1><p>{data.draft.period} · {data.archivedAt ? 'Diarsipkan' : data.activeRelease ? 'Terbit' : 'Draf'}{data.activityStatus === 'closed' && ' · Kegiatan selesai'}</p></div>
-        {data.activeRelease && !data.archivedAt && <Link className="button" to={`/d/${data.slug}`}><ExternalLink size={16} /> Buka tautan pembaca</Link>}</div>
-      <nav className="workspace-tabs" aria-label="Langkah pengelolaan">{tabs.map(([route, label, Icon]) => <button key={route} aria-current={tab === route ? 'page' : undefined} className={tab === route ? 'selected' : ''} onClick={() => setQuery({ tab: route })}><Icon size={17} />{label}</button>)}</nav>
+        {data.activeRelease && !data.archivedAt && <Link className="button" to={`/${data.slug}`}><ExternalLink size={16} /> Buka tautan pembaca</Link>}</div>
+      <WorkflowTree detail={data} tab={tab} onSelect={route => setQuery({ tab: route })} />
+      <nav className="workspace-tabs" aria-label="Langkah pengelolaan">{tabs.map(([route, label, Icon]) => <button key={route} type="button" aria-current={tab === route ? 'page' : undefined} className={tab === route ? 'selected' : ''} onClick={() => setQuery({ tab: route })}><Icon size={17} />{label}</button>)}</nav>
       <div hidden={tab !== 'editor'}>{data.canManage && <Editor detail={data} onUpdate={reload} onPendingChange={setEditorPending} active={tab === 'editor'} />}</div>
       <div hidden={tab !== 'data'}><UploadPanel detail={data} onUpdate={reload} draftPending={editorPending || loading} /></div>
       {tab === 'access' && data.canManage && <Access detail={data} reload={reload} />}
@@ -58,9 +85,17 @@ function Workspace({ id }: { id: string }) {
   </>
 }
 
+function normalizeSlug(input: string) {
+  return input.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-/, '').slice(0, 60)
+}
+
 function Access({ detail, reload }: { detail: DashboardDetail; reload: () => void }) {
   const path = `/admin/dashboards/${detail.id}`
   const [visibility, setVisibility] = useState(detail.visibility)
+  const [slug, setSlug] = useState(detail.slug)
+  useEffect(() => { setSlug(detail.slug) }, [detail.slug])
+  const cleanSlug = slug.replace(/-+$/, '')
+  const slugChanged = Boolean(cleanSlug) && cleanSlug !== detail.slug
   const personalRows = detail.draft.datasets.some(dataset => dataset.grain === 'person')
   const selectedVisibility: Visibility = personalRows && visibility === 'public' ? 'link' : visibility
   const canChangeAccess = detail.activeRelease && detail.visibility !== selectedVisibility && (!(personalRows || detail.activePersonal) || selectedVisibility !== 'public')
@@ -91,15 +126,19 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
     const email = new FormData(event.currentTarget).get('email')
     await action(() => api(`${path}/grants`, 'POST', { email }), 'Undangan tersimpan.')
   }
-  const readerLink = `${location.origin}/d/${detail.slug}`
+  const readerLink = `${location.origin}/${detail.slug}`
   return <>
     {error && <Alert>{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}
     <div className="studio-grid">
-      <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon"><Globe size={20} /></span><div><h2>Terbitkan dashboard</h2><p>Pilih siapa yang dapat membuka laporan pada tautan pembaca.</p></div></div>
-        <div className="form-stack"><label>Hak baca<Select value={selectedVisibility} options={Object.entries(accessLabels).filter(([key]) => !personalRows || key !== 'public').map(([key, name]) => ({ value: key, label: name }))} onChange={value => setVisibility(value as Visibility)} /></label>
+      <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon"><Globe size={20} /></span><div><h2>Terbitkan dashboard</h2><p>Pilih alamat tautan ringkas dan siapa yang dapat membuka laporan.</p></div></div>
+        <div className="form-stack">
+        <label>Alamat tautan (endpoint)<div className="slug-input-group"><span className="slug-prefix">{location.host}/</span><input value={slug} maxLength={60} placeholder="matching-sbr" onChange={event => setSlug(normalizeSlug(event.target.value))} /></div></label>
+        <p className="muted-text">Tautan ringkas: <code>{location.origin}/{cleanSlug || detail.slug}</code>. Gunakan huruf kecil, angka, dan tanda hubung (-).</p>
+        {slugChanged && detail.activeRelease && <button type="button" className="button" disabled={working || cleanSlug.length < 3} onClick={() => action(() => api(`${path}/slug`, 'PATCH', { slug: cleanSlug }), 'Alamat tautan diperbarui.')}>Simpan alamat tautan</button>}
+        <label>Hak baca<Select value={selectedVisibility} options={Object.entries(accessLabels).filter(([key]) => !personalRows || key !== 'public').map(([key, name]) => ({ value: key, label: name }))} onChange={value => setVisibility(value as Visibility)} /></label>
         <p className="muted-text">{selectedVisibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : selectedVisibility === 'link' ? 'Siapa pun yang menerima tautan berbagi dapat langsung membuka dashboard tanpa perlu masuk akun.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}{personalRows && ' Dashboard per individu tidak ditampilkan di katalog publik.'}</p>
-        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(async () => {
-          await api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility })
+        <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo || cleanSlug.length < 3} onClick={() => action(async () => {
+          await api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility, slug: cleanSlug })
           await ensureShareLink(selectedVisibility)
         }, 'Dashboard terbit.')}><CheckCircle2 size={16} /> {detail.archivedAt ? 'Terbitkan kembali' : detail.activeRelease ? 'Terbitkan perubahan draf' : 'Terbitkan dashboard'}</button>{canChangeAccess && <button className="button" disabled={working} onClick={() => action(async () => {
           await api(`${path}/access`, 'PATCH', { visibility: selectedVisibility })
