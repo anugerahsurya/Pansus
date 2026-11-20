@@ -3,6 +3,7 @@ import { unzipSync } from 'fflate'
 import * as xlsx from 'xlsx'
 import { activeFields, dateSchema, joinIdentity, timeSchema, type CollectionReport, type DataRow, type Dataset, type DatasetData, type Field, type Notice, type SnapshotData, type TemplateId, type UploadMapping, type Value, type Values } from '../contracts/index'
 import { analysisFormat } from '../contracts/csv-analysis'
+import { parseDateTime } from '../contracts/datetime'
 import { applyFormulas } from '../metrics/index'
 import { findRegion, pesRegions, sumbar } from '../../templates/regions'
 
@@ -62,10 +63,23 @@ function cellValue(item: xlsx.CellObject | undefined, formatted: boolean) {
   return item.v ?? null
 }
 
+function excelDateTime(item: xlsx.CellObject | undefined, date1904: boolean): string | undefined {
+  if (item?.t !== 'n' || typeof item.v !== 'number' || typeof item.z !== 'string' || !xlsx.SSF.is_date(item.z)) return
+  // Keep durations and time-only formats separate from calendar dates.
+  const format = item.z.replace(/"[^"]*"|\\.|\[[^\]]*\]|[_*]./g, '')
+  if (!/[dy]/i.test(format)) return
+  const parts = xlsx.SSF.parse_date_code(Math.round(item.v * 86_400) / 86_400, { date1904 })
+  if (!parts) return
+  const date = [parts.d, parts.m, parts.y].join('/')
+  const time = [parts.H, parts.M, parts.S].map(part => String(part).padStart(2, '0')).join(':')
+  return parseDateTime(date + ' ' + time)
+}
+
 type HeaderMatch = (headers: string[]) => boolean
 
 function readExcel(file: InputFile, mapping: UploadMapping, matches?: HeaderMatch): Source {
   const book = workbook(file)
+  const date1904 = book.Workbook?.WBProps?.date1904 === true
   const candidates = (mapping.sheet ? [mapping.sheet] : book.SheetNames).flatMap(name => {
     const sheet = book.Sheets[name]
     if (!matches || !sheet?.['!ref']) return []
@@ -97,7 +111,7 @@ function readExcel(file: InputFile, mapping: UploadMapping, matches?: HeaderMatc
       const cells = cols.map(column => {
         const item = sheet[xlsx.utils.encode_cell({ r, c: column })]
         if (item?.t === 'n' && /\d\s*%/.test(item.w ?? '') && /%/.test((item.z ?? '').replace(/"[^"]*"|\\./g, ''))) percentColumns.add(column)
-        return cellValue(item, true)
+        return excelDateTime(item, date1904) ?? cellValue(item, true)
       })
       return { cells, percentColumns, location: `${name}, baris ${r + 1}` }
     }),
@@ -165,12 +179,18 @@ function numericInput(text: string) {
 
 function value(input: unknown, field: Field, location: string, blankZero: boolean, excelPercent = false) {
   if (input == null || input === '') {
-    if (blankZero) return 0
+    if (blankZero && field.unit !== 'datetime') return 0
     if (!field.nullable) invalid('VALUE_REQUIRED', `Isi kolom ${field.label}.`, location)
     return null
   }
   if (typeof input !== 'string' && typeof input !== 'number') invalid('INVALID_CELL', `Baca ulang kolom ${field.label}; sel harus berisi nilai atau rumus dengan hasil tersimpan.`, location)
   if (field.unit === 'category') return String(input).trim().slice(0, 250)
+  const dateTime = parseDateTime(input)
+  if (field.unit === 'datetime') {
+    if (!dateTime) invalid('INVALID_DATETIME', `Kolom ${field.label} harus berisi tanggal Excel atau teks seperti 20/11/2026 12:00:01.`, location)
+    return dateTime
+  }
+  if (dateTime) invalid('DATETIME_MAPPING', `Ubah tipe kolom ${field.label} menjadi Tanggal & jam di Edit kolom.`, location)
   const raw = String(input).trim()
   const percentText = field.unit === 'percent' && raw.endsWith('%')
   const text = percentText ? raw.replace(/\s*%$/, '') : raw
@@ -195,7 +215,7 @@ export function profileAnalysisFile(file: InputFile, mapping: Pick<UploadMapping
     const allNumbers = numeric.length > 0 && numeric.every(Number.isFinite)
     const percent = allNumbers && values.some(item => String(item).trim().endsWith('%'))
     const excelPercent = allNumbers && rows.filter(row => row.percentColumns?.has(index)).length === values.length
-    const kind = !values.length ? 'empty' : !allNumbers ? 'category' : excelPercent ? 'fraction' : percent ? 'percentage' :
+    const kind = !values.length ? 'empty' : values.every(parseDateTime) ? 'datetime' : !allNumbers ? 'category' : excelPercent ? 'fraction' : percent ? 'percentage' :
       numeric.every(item => Number.isSafeInteger(item) && item >= 0) ? 'count' : 'number'
     return { index, header, region, uniqueRegions, person, kind, explicitRegion: regionHeaders.includes(header), unitInterval: allNumbers && numeric.every(item => item >= 0 && item <= 1), nullable: values.length < rows.length } as const
   })
@@ -311,7 +331,8 @@ export function previewSource(file: InputFile, dataset: Dataset | undefined, map
     const fractions = numeric && entries.every(row => row.percentColumns?.has(index))
     const percentages = numeric && (fractions || /[%]|\bpersen\b/i.test(label) || values.every(value => value.endsWith('%')))
     const codes = values.some(value => /^0\d+$/.test(value)) || /\b(kode|id|nip|nik)\b/i.test(label.replace(/[_-]/g, ' '))
-    const unit: Field['unit'] = percentages ? 'percent' : !numeric || codes ? 'category' :
+    const dateTime = values.length > 0 && values.every(parseDateTime)
+    const unit: Field['unit'] = dateTime ? 'datetime' : percentages ? 'percent' : !numeric || codes ? 'category' :
       numbers.every(value => Number.isSafeInteger(value) && value >= 0) ? 'count' : 'number'
     return { label, unit, scale: percentages ? (fractions ? 'fraction' as const : 'percentage' as const) : undefined,
       selectable: Boolean(label) && parsed.headers.indexOf(label) === index && parsed.headers.lastIndexOf(label) === index }

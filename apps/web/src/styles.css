@@ -77,6 +77,7 @@ svg { flex-shrink: 0; }
 .skip-link { position: fixed; z-index: 12; top: 6px; left: 10px; padding: 12px; background: var(--paper); border-radius: 7px; transform: translateY(-150%); }
 .skip-link:focus { transform: none; }
 .shell { --masthead-height: 70px; display: grid; grid-template-columns: 218px minmax(0, 1fr); grid-template-rows: var(--masthead-height) 1fr; min-height: 100dvh; }
+.shell.shell-guest { grid-template-columns: minmax(0, 1fr); }
 .site-header { grid-column: 1 / -1; display: flex; align-items: center; gap: 20px; border-top: 3px solid var(--brand); border-bottom: 1px solid var(--line); background: var(--paper); padding: 0 28px; position: sticky; top: 0; z-index: 7; }
 .brand { display: inline-flex; align-items: center; gap: 10px; min-width: 0; color: var(--ink); }
 .brand img { display: block; }
@@ -109,7 +110,6 @@ svg { flex-shrink: 0; }
 .breadcrumbs a { color: var(--muted); }
 .breadcrumbs a:hover { text-decoration: underline; }
 .breadcrumbs [aria-current] { color: var(--ink); font-weight: 800; }
-.back { display: inline-flex; align-items: center; gap: 8px; font-size: .81rem; font-weight: 800; }
 .button, .icon-button { border: 1px solid var(--control-line); background: var(--paper); color: var(--brand-dark); display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 43px; padding: 9px 13px; border-radius: 9px; font-size: .78rem; font-weight: 800; text-align: center; text-decoration: none; }
 .button:not(:disabled):hover, .icon-button:not(:disabled):hover { background: var(--wash); border-color: #afc1d7; }
 .button.primary { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
@@ -328,7 +328,8 @@ tfoot small { display: block; }
 .example-downloads summary svg { vertical-align: middle; margin-right: 5px; }
 .example-downloads > div { display: flex; gap: 8px; flex-wrap: wrap; padding: 5px 0; }
 .example-downloads a { text-decoration: underline; }
-.auth-container { max-width: 465px; margin: 23px auto; display: grid; gap: 18px; }
+.main-login { display: grid; place-items: center; }
+.auth-container { width: min(100%, 465px); }
 .login-panel, .prose { padding: 23px; }
 .login-panel h1 { margin-top: 12px; font-size: 1.8rem; }
 .login-panel > p { margin: 8px 0 15px; color: var(--muted); font-size: .83rem; }

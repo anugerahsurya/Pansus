@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { activeFields } from './fields'
+import { activeFields, isNumericUnit } from './fields'
 export { activeFields } from './fields'
 
 export const idSchema = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/).refine(id => id !== 'constructor' && id !== 'prototype')
@@ -12,7 +12,7 @@ export const ruleSchema = z.object({
 })
 const fieldSchema = z.object({
   id: idSchema, label: z.string().trim().min(1).max(100),
-  unit: z.enum(['count', 'number', 'percent', 'category']), aliases: z.array(z.string().min(1).max(120)).max(16).default([]),
+  unit: z.enum(['count', 'number', 'percent', 'category', 'datetime']), aliases: z.array(z.string().min(1).max(120)).max(16).default([]),
   scale: z.enum(['fraction', 'percentage']).optional(), nullable: z.boolean().default(true),
   public: z.boolean().default(true), derived: z.boolean().optional(), enabled: z.boolean().optional(),
   formula: z.string().trim().min(1).max(256).optional(),
@@ -87,7 +87,7 @@ export const definitionSchema = z.object({
     if (!ids.length || ids.some(id => !fields.get(id)?.public)) issue(`Pilih kolom publik yang tersedia untuk ${widget.title}.`)
     if (['progress', 'kpi', 'bars'].includes(widget.type) && !widget.field) issue(`Pilih indikator utama untuk ${widget.title}.`)
     if (['table', 'donut'].includes(widget.type) && !widget.fields?.length) issue(`Pilih kolom untuk ${widget.title}.`)
-    if (widget.type !== 'table' && ids.some(id => fields.get(id)?.unit === 'category')) issue(`Pilih indikator numerik untuk ${widget.title}.`)
+    if (widget.type !== 'table' && ids.some(id => !isNumericUnit(fields.get(id)?.unit))) issue(`Pilih indikator numerik untuk ${widget.title}.`)
     if (widget.type === 'donut' && ids.some(id => fields.get(id)?.unit !== 'count')) issue(`Pilih kategori hitungan yang saling lepas untuk ${widget.title}.`)
     if (widget.type === 'bars' && ((widget.fields?.length ?? 0) > 3 || widget.fields?.some(id => fields.get(id)?.unit !== fields.get(widget.field ?? '')?.unit))) issue(`Pilih maksimal empat seri dengan satuan yang sama untuk ${widget.title}.`)
     if (widget.progressGroup) {
@@ -100,11 +100,11 @@ export const definitionSchema = z.object({
     }
     for (const [id, rule] of Object.entries(widget.provinceFooter?.rules ?? {})) {
       const field = fields.get(id)
-      if (!field?.public || (field.unit === 'category' && !['none', 'mode', 'count', 'reportedValue'].includes(rule.op))) issue(`Aturan ringkasan ${id} tidak sesuai dengan tipe kolom.`)
+      if (!field?.public || (!isNumericUnit(field.unit) && !['none', 'mode', 'count', 'reportedValue'].includes(rule.op))) issue(`Aturan ringkasan ${id} tidak sesuai dengan tipe kolom.`)
       if (rule.op === 'formula' && !field?.formula) issue(`Kolom ${id} memerlukan rumus untuk ringkasan provinsi.`)
       const operands = [rule.numerator, rule.denominator].filter(Boolean) as string[]
       if (['ratioOfSums', 'weightedMean', 'difference'].includes(rule.op) && operands.length !== 2) issue(`Pilih dua kolom ringkasan untuk ${id}.`)
-      if (operands.some(operand => !fields.get(operand)?.public || fields.get(operand)?.unit === 'category')) issue(`Pilih komponen numerik publik untuk ringkasan ${id}.`)
+      if (operands.some(operand => !fields.get(operand)?.public || !isNumericUnit(fields.get(operand)?.unit))) issue(`Pilih komponen numerik publik untuk ringkasan ${id}.`)
     }
   }
 })

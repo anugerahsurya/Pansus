@@ -31,14 +31,42 @@ async function login(request: APIRequestContext, role = 'admin') {
   const response = await request.post('/api/auth/login', { headers, data: { email: `${role}@example.test`, password: secret } })
   expect(response.ok()).toBeTruthy()
 }
+let adminState: Awaited<ReturnType<APIRequestContext['storageState']>> | undefined
+const withAdmin = test.extend({
+  storageState: async ({ playwright, baseURL }, use) => {
+    if (!adminState) {
+      const auth = await playwright.request.newContext({ baseURL })
+      try {
+        await login(auth)
+        adminState = await auth.storageState()
+      } finally {
+        await auth.dispose()
+      }
+    }
+    await use(adminState)
+  },
+})
 async function importReady(request: APIRequestContext, id: string) {
   let job
   await expect.poll(async () => { job = await (await request.get(`/api/admin/imports/${id}/preview`)).json(); return job.status }).toBe('ready')
   return job!
 }
 
-test('konfigurasi CSV tersimpan bersama draf dan menolak pemetaan dataset asing', async ({ request }) => {
-  await login(request)
+test('pengunjung diarahkan ke login dan contoh hanya tersedia dengan sesi', async ({ page, request }) => {
+  await page.goto('/')
+  await expect(page).toHaveURL('/masuk')
+  await expect(page.getByRole('heading', { name: 'Masuk ke portal' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Navigasi utama' })).toHaveCount(0)
+  await expect(page.getByText('Ringkasan contoh')).toHaveCount(0)
+  await page.goto('/katalog')
+  await expect(page).toHaveURL('/masuk?lanjut=%2Fkatalog')
+  for (const path of ['/api/catalog', '/api/templates', '/api/templates/pes/examples/0/sls']) {
+    expect((await request.get(path)).status()).toBe(401)
+  }
+  expect((await request.get('/api/d/progres-lapangan-pes')).status()).toBe(404)
+})
+
+withAdmin('konfigurasi CSV tersimpan bersama draf dan menolak pemetaan dataset asing', async ({ request }) => {
   const created = await request.post('/api/admin/dashboards', { headers, data: { template: 'custom' } })
   expect(created.ok()).toBeTruthy()
   const { id } = await created.json()
@@ -78,7 +106,12 @@ test('unggahan Excel mengaktifkan tombol Gemini dan pop-up progres sampai hasil 
   })
   await page.goto(`/studio/${id}?tab=data`)
   const book = xlsx.utils.book_new()
-  xlsx.utils.book_append_sheet(book, xlsx.utils.aoa_to_sheet([['wilayah', 'target', 'selesai'], ['1303', 10, 5]]), 'Progres')
+  const sheet = xlsx.utils.aoa_to_sheet([
+    ['wilayah', 'target', 'selesai', 'waktu pengisian'],
+    ['1303', 10, 5, Date.UTC(2026, 10, 20, 12, 0, 1) / 86_400_000 + 25_569],
+  ])
+  sheet.D2.z = 'dd/mm/yyyy hh:mm:ss'
+  xlsx.utils.book_append_sheet(book, sheet, 'Progres')
   await uploadInput(page, 'Wilayah').setInputFiles({
     name: 'progres.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from(xlsx.write(book, { type: 'array', bookType: 'xlsx' })),
   })
@@ -95,6 +128,22 @@ test('unggahan Excel mengaktifkan tombol Gemini dan pop-up progres sampai hasil 
   await expect(dialog.getByRole('progressbar')).toHaveJSProperty('value', 100)
   await dialog.getByRole('button', { name: 'Lihat usulan' }).click()
   await expect(page.getByRole('region', { name: 'Usulan Gemini' }).getByText(/1 wilayah diperiksa · Lembar Progres/)).toBeVisible()
+  const source = page.getByRole('article', { name: 'Wilayah', exact: true })
+  await expect(source.getByRole('columnheader', { name: /waktu pengisian.*Tanggal & jam/ })).toBeVisible()
+  await expect(source.getByRole('cell', { name: '20/11/2026 12:00:01' })).toBeVisible()
+  await source.getByRole('button', { name: 'Edit kolom' }).click()
+  await source.getByRole('combobox', { name: 'Pilih kolom untuk ditambahkan' }).selectOption('waktu pengisian')
+  await source.getByRole('button', { name: 'Tambah', exact: true }).click()
+  await expect(source.getByRole('combobox', { name: 'Tipe kolom waktu pengisian' })).toHaveValue('datetime')
+  await source.getByRole('button', { name: 'Simpan kolom' }).click()
+  await page.getByLabel('Tanggal kondisi').fill('2026-11-20')
+  await page.getByLabel('Jam kondisi (WIB)').fill('13:00')
+  await page.getByRole('button', { name: 'Periksa unggahan' }).click()
+  await page.getByLabel('Kata sandi konfirmasi').fill(secret)
+  await page.getByRole('button', { name: 'Terapkan hasil unggahan' }).click()
+  await expect(page.getByText(/Data tersimpan pada draf/)).toBeVisible()
+  await page.reload()
+  await expect(source.getByRole('cell', { name: '20/11/2026 12:00:01' })).toBeVisible()
 })
 
 test('Bantuan Gemini terlihat pada profil bawaan dan memberi petunjuk sesuai ketersediaan', async ({ page }) => {
@@ -325,11 +374,12 @@ async function uploadFromStudio(page: Page, day: 0 | 1) {
 }
 
 test('PES melalui Studio, perubahan alias, tautan yang sama dan dua pembaca', async ({ page, browser }) => {
-  await page.goto('/masuk')
+  await page.goto('/template?dari=studio')
+  await expect(page).toHaveURL('/masuk?lanjut=%2Ftemplate%3Fdari%3Dstudio')
   await page.getByLabel('Email', { exact: true }).fill('admin@example.test')
   await page.getByLabel('Kata sandi', { exact: true }).fill(secret)
   await page.getByRole('button', { name: 'Masuk', exact: true }).click()
-  await page.getByRole('link', { name: 'Buat dashboard' }).click()
+  await expect(page).toHaveURL('/template?dari=studio')
   await page.getByRole('button', { name: 'Gunakan contoh' }).first().click()
   await expect(page.getByRole('heading', { name: 'Progres Lapangan PES SE2026', level: 1 })).toBeVisible()
   const editor = page.getByLabel('Judul kegiatan')
@@ -364,6 +414,8 @@ test('PES melalui Studio, perubahan alias, tautan yang sama dan dua pembaca', as
   const readerPage = await reader.newPage()
   await readerPage.goto(new URL(readerPath!, page.url()).href)
   await expect(readerPage.locator('.hero-meta')).toContainText('13 November 2026')
+  await expect(readerPage.getByRole('navigation', { name: 'Navigasi utama' })).toHaveCount(0)
+  await expect(readerPage.getByRole('link', { name: 'Lihat katalog kegiatan' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Perbarui data', exact: true }).click()
   await uploadFromStudio(page, 1)
   await expect(page.getByRole('link', { name: 'Buka tautan pembaca' })).toHaveAttribute('href', readerPath!)
@@ -378,7 +430,7 @@ test('PES melalui Studio, perubahan alias, tautan yang sama dan dua pembaca', as
   await second.close()
 })
 
-test('dashboard menata kartu dan grafik berdampingan serta membuka rincian', async ({ page }) => {
+withAdmin('dashboard menata kartu dan grafik berdampingan serta membuka rincian', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto('/')
   await expect(page.locator('.hero')).toHaveCSS('border-bottom-width', '0px')
@@ -410,7 +462,7 @@ test('dashboard menata kartu dan grafik berdampingan serta membuka rincian', asy
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
 })
 
-test('PNG mencakup semua tabel dan dapat diunduh melalui pekerjaan', async ({ page, request }, info) => {
+withAdmin('PNG mencakup semua tabel dan dapat diunduh melalui pekerjaan', async ({ page, request }, info) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Progres Lapangan PES SE2026' })).toBeVisible()
   await page.screenshot({ path: info.outputPath('portal-desktop.png'), fullPage: true })
@@ -428,7 +480,7 @@ test('PNG mencakup semua tabel dan dapat diunduh melalui pekerjaan', async ({ pa
   await page.screenshot({ path: info.outputPath('portal-ponsel.png'), fullPage: true })
 })
 
-test('rincian berjenjang dan ZIP untuk semua SLS', async ({ page, request }) => {
+withAdmin('rincian berjenjang dan ZIP untuk semua SLS', async ({ page, request }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Buka rincian Kab. Solok', exact: true }).click()
   await page.getByRole('button', { name: 'Buka rincian Kecamatan 040', exact: true }).click()
@@ -481,7 +533,7 @@ test('impor idempoten, konflik penutupan, lalu cabut tautan dan periksa undangan
   const anon = await playwright.request.newContext({ baseURL })
   const readerPath = `/api/d/${state.slug}`
   expect((await anon.get(readerPath)).status()).toBe(404)
-  expect((await (await anon.get('/api/catalog')).json()).some((item: { slug: string }) => item.slug === state.slug)).toBeFalsy()
+  expect((await anon.get('/api/catalog')).status()).toBe(401)
   expect((await anon.post('/api/share/exchange', { headers, data: { slug: state.slug, secret: grant.secret } })).ok()).toBeTruthy()
   expect((await (await anon.get(readerPath)).json()).activityStatus).toBe('closed')
   const queued = await (await anon.post(`/api/dashboards/${id}/exports`, { headers, data: { releaseId: (await published.json()).releaseId } })).json()

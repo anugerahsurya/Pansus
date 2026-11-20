@@ -2,6 +2,7 @@ import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronRight, ChevronsUpDown, ExternalLink, Maximize2, Search, X } from 'lucide-react'
 import type { CollectionReport, DataRow, Dataset, Field, Report, Value, Widget } from '../contracts/index'
+import { formatDateTime } from '../contracts/datetime'
 import { groupedBarLimit, singleBarLimit } from '../contracts/visualization'
 import { aggregate, delta, indicator, previousDay, progressBand, progressBands, sortRows, weightedTarget, type ProgressBand } from '../metrics/index'
 import { pesPace, pesRegions } from '../../templates/regions'
@@ -10,7 +11,10 @@ import { api, conditionDate, fmt, pct, type Sorts } from '../../apps/web/src/api
 const stateColors = ['var(--report-series-3, var(--bps-orange))', 'var(--report-series-4, var(--bps-sky))', 'var(--report-series-2, var(--bps-green))', 'var(--report-accent, var(--brand))', 'var(--report-deep, var(--brand-dark))']
 const barColors = ['var(--report-accent, var(--brand))', 'var(--report-series-2, var(--bps-green))', 'var(--report-series-3, var(--bps-orange))', 'var(--report-series-4, var(--bps-sky))']
 const empty = { rows: [] }
-const shown = (value: Value | undefined, unit?: Field['unit']) => value == null ? '—' : typeof value === 'number' ? unit === 'percent' ? pct.format(value) : fmt.format(value) : value
+function shown(value: Value | undefined, unit?: Field['unit']) {
+  if (unit === 'datetime' && typeof value === 'string') return formatDateTime(value)
+  return value == null ? '—' : typeof value === 'number' ? unit === 'percent' ? pct.format(value) : fmt.format(value) : value
+}
 const metricTypes = new Set(['progress', 'kpi'])
 const fieldLabel = (dataset: Dataset, id: string) => dataset.fields.find(field => field.id === id)?.label ?? id
 

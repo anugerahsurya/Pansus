@@ -259,9 +259,9 @@ export class Monitoring {
     return snapshot
   }
   authorize(db: Records, credentials: Credentials, dashboard: Dashboard) {
-    if (dashboard.archivedAt) return false
-    if (dashboard.activeRelease && dashboard.visibility === 'public') return true
-    if (!dashboard.activeRelease) return false
+    if (dashboard.archivedAt || !dashboard.activeRelease) return false
+    if (dashboard.demo) return !!this.user(db, credentials)
+    if (dashboard.visibility === 'public') return true
     const user = this.user(db, credentials)
     if (user && canEdit(db, user, dashboard)) return true
     const active = (grant: Grant) => !grant.expires || grant.expires > Date.now()
@@ -270,13 +270,16 @@ export class Monitoring {
     const session = db.get<AccessSession>('share:' + hash(credentials.shared))
     return !!session && session.dashboardId === dashboard.id && session.expires > Date.now() && dashboard.grants.some(grant => grant.id === session.grantId && grant.mode === 'link' && active(grant))
   }
-  async catalog() {
-    return this.store.read(db => db.list<Dashboard>('dashboard:').filter(dashboard => dashboard.activeRelease && !dashboard.archivedAt && dashboard.visibility === 'public')
-      .map(dashboard => {
-        const release = db.get<Release>(releaseKey(dashboard, dashboard.activeRelease!))!
-        const { title, description, period, satker, theme } = release.definition
-        return { slug: dashboard.slug, title, description, period, satker, theme, template: dashboard.template, demo: dashboard.demo, activityStatus: dashboard.activityStatus, date: release.date, time: release.time }
-      }).sort((a, b) => Number(b.demo) - Number(a.demo) || b.date.localeCompare(a.date)))
+  async catalog(credentials: Credentials) {
+    return this.store.read(db => {
+      this.requireUser(db, credentials)
+      return db.list<Dashboard>('dashboard:').filter(dashboard => dashboard.activeRelease && !dashboard.archivedAt && dashboard.visibility === 'public')
+        .map(dashboard => {
+          const release = db.get<Release>(releaseKey(dashboard, dashboard.activeRelease!))!
+          const { title, description, period, satker, theme } = release.definition
+          return { slug: dashboard.slug, title, description, period, satker, theme, template: dashboard.template, demo: dashboard.demo, activityStatus: dashboard.activityStatus, date: release.date, time: release.time }
+        }).sort((a, b) => Number(b.demo) - Number(a.demo) || b.date.localeCompare(a.date))
+    })
   }
 
   private report(db: Records, dashboard: Dashboard, release?: Release): Report {

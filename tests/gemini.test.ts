@@ -16,10 +16,10 @@ test('Gemini menganalisis lembar XLSX dan XLS dengan persen Excel yang tersimpan
   const book = xlsx.utils.book_new()
   const sheet = xlsx.utils.aoa_to_sheet([
     ['Rekap Petugas'],
-    ['Nama Petugas', 'Progres'],
-    ['Petugas Uji Satu', 1],
-    ['Petugas Uji Dua', .5],
-    ['Petugas Uji Tiga', .49],
+    ['Nama Petugas', 'Progres', 'Waktu pengisian'],
+    ['Petugas Uji Satu', 1, '20/11/2026 12:00:01'],
+    ['Petugas Uji Dua', .5, '20/11/2026 12:00:05'],
+    ['Petugas Uji Tiga', .49, '20/11/2026 12:00:09'],
   ])
   for (const ref of ['B3', 'B4', 'B5']) sheet[ref].z = '0%'
   xlsx.utils.book_append_sheet(book, xlsx.utils.aoa_to_sheet([['Catatan penggunaan']]), 'Panduan')
@@ -30,14 +30,18 @@ test('Gemini menganalisis lembar XLSX dan XLS dengan persen Excel yang tersimpan
     const suggestion = await suggestCsv({
       file, definition, dataset: definition.datasets[0], template: 'custom', design: true, expectedRevision: 1,
     }, async (_url, request) => {
-      assert.doesNotMatch(String(request?.body), /Petugas Uji|Progres Petugas|Nama Petugas|49%/)
-      return response({ region: 0, fields: [{ column: 1, unit: 'count' }], progress: [] })
+      assert.doesNotMatch(String(request?.body), /Petugas Uji|Progres Petugas|Nama Petugas|49%|12:00/)
+      assert.match(String(request?.body), /datetime/)
+      return response({ region: 0, fields: [{ column: 1, unit: 'count' }, { column: 2, unit: 'number' }], progress: [] })
     })
     assert.equal(suggestion.mapping.sheet, 'Progres Petugas')
     assert.equal(suggestion.mapping.headerRow, 2)
     assert.equal(suggestion.definition?.widgets[0].progressGroup?.field, 'kolom_2')
     const dataset = suggestion.definition!.datasets[0]
     assert.equal(dataset.fields[0].scale, 'fraction')
+    assert.equal(dataset.fields[1].unit, 'datetime')
+    assert.equal(dataset.fields[1].public, false)
+    assert.equal(readDataset(file, dataset, suggestion.mapping, false).rows[0].values.kolom_3, '2026-11-20T12:00:01')
     assert.deepEqual(readDataset(file, dataset, suggestion.mapping, false).rows.map(row => row.values.kolom_2), [1, .5, .49])
     dataset.fields[0].scale = 'percentage'
     assert.deepEqual(readDataset(file, dataset, suggestion.mapping, false).rows.map(row => row.values.kolom_2), [1, .5, .49])

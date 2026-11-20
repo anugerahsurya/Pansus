@@ -1,5 +1,5 @@
 import type { Dataset, Values } from '../contracts/index'
-import { activeFields } from '../contracts/fields'
+import { activeFields, isNumericUnit } from '../contracts/fields'
 
 type Op = '+' | '-' | '*' | '/'
 type Expression = { type: 'number'; value: number } | { type: 'field'; id: string } | { type: 'negative'; node: Expression } | { type: 'binary'; op: Op; left: Expression; right: Expression }
@@ -90,11 +90,11 @@ export function compileFormulas(dataset: Dataset) {
     if (sorted.has(id)) return
     const field = fields.get(id)
     if (!field?.formula) return
-    if (field.unit === 'category' || field.derived) throw new Error(`Kolom ${id} tidak dapat memakai rumus.`)
+    if (!isNumericUnit(field.unit) || field.derived) throw new Error(`Kolom ${id} tidak dapat memakai rumus.`)
     const tree = parseFormula(field.formula)
     for (const dependency of tree.fields) {
       const source = fields.get(dependency)
-      if (!source || source.unit === 'category') throw new Error(`Kolom numerik ${dependency} tidak tersedia untuk rumus ${id}.`)
+      if (!source || !isNumericUnit(source.unit)) throw new Error(`Kolom numerik ${dependency} tidak tersedia untuk rumus ${id}.`)
       if (field.public && !source.public) throw new Error(`Rumus publik ${id} memakai kolom terbatas ${dependency}.`)
       visit(dependency, [...path, id])
     }

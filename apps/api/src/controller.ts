@@ -48,9 +48,15 @@ export class ControllerRoutes {
   constructor(@Inject(Monitoring) private readonly app: Monitoring, @Inject(Exports) private readonly exports: Exports) {}
 
   @Get('health') health() { return { ok: true } }
-  @Get('catalog') catalog() { return this.app.catalog() }
-  @Get('templates') templates() { return templateCatalog() }
-  @Get('templates/:id/examples/:day/:slot') example(@Param('id') id: string, @Param('day') day: string, @Param('slot') slot: string, @Res() res: Response) {
+  @Get('catalog') catalog(@Req() req: Request) { return this.app.catalog(credentials(req)) }
+  @Get('templates') templates(@Req() req: Request) {
+    return this.app.store.read(db => {
+      this.app.requireUser(db, credentials(req))
+      return templateCatalog()
+    })
+  }
+  @Get('templates/:id/examples/:day/:slot') async example(@Req() req: Request, @Param('id') id: string, @Param('day') day: string, @Param('slot') slot: string, @Res() res: Response) {
+    await this.app.store.read(db => this.app.requireUser(db, credentials(req)))
     const file = exampleFiles(payload(z.enum(['pes', 'susenas']), id), Number(payload(z.enum(['0', '1']), day)) as 0 | 1)[slot]
     if (!file || !(file.bytes instanceof Uint8Array)) fail(404, 'NOT_FOUND', 'Berkas contoh tidak tersedia.')
     return res.attachment(file.name).send(Buffer.from(file.bytes))

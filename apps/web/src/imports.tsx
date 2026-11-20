@@ -3,12 +3,13 @@ import { ArrowDown, FileSpreadsheet, Info, Plus, Settings2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import type { Dataset, Definition, UploadMapping } from '../../../packages/contracts/index'
 import { analysisFormat, type CsvAnalysisStage, type GeminiStatus } from '../../../packages/contracts/csv-analysis'
+import { formatDateTime } from '../../../packages/contracts/datetime'
 import { ApiError, api, conditionDate, currentWib, fmt, requestCsvAnalysis, type CsvSuggestion, type DashboardDetail, type ImportJob } from './api'
 import { Alert } from './common'
 import { SourceWorkbench } from './source-workbench'
 
 const tabularFormats = '.csv,.tsv,.xlsx,.xls,.json'
-const csvUnits = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Kategori' }
+const csvUnits = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Kategori', datetime: 'Tanggal & jam' }
 const geminiLabels: Record<GeminiStatus, string> = { unconfigured: 'Belum dikonfigurasi', configured: 'Belum dicek', ready: 'Terhubung', unavailable: 'Koneksi bermasalah' }
 const analysisStages: Record<CsvAnalysisStage, { percent: number; message: string }> = {
   reading: { percent: 20, message: 'Membaca struktur berkas…' },
@@ -403,7 +404,10 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
           <summary><span><b>{dataset?.label ?? diff.id}</b><small>{diff.rows} {person ? 'petugas' : 'wilayah'}{diff.detailed ? ` · ${diff.detailed} rincian SSLS` : ''}</small></span>{!person && <span>Target <b>{diff.target == null ? '—' : fmt.format(diff.target)}</b></span>}{diff.source && <small className="result-source">{diff.source}</small>}</summary>
           <div className="sample">{person ? <p>{diff.newCodes.length} petugas baru · {diff.gone.length} petugas keluar dari data</p> :
             <p>Target sebelumnya {diff.before == null ? '—' : fmt.format(diff.before)}{diff.newCodes.length ? ` · Wilayah baru ${diff.newCodes.join(', ')}` : ''}{diff.gone.length ? ` · Wilayah hilang ${diff.gone.join(', ')}` : ''}</p>}
-            {diff.samples.map(row => <p key={row.code}><b>{row.name}</b> {Object.entries(row.values).map(([key, value]) => `${key} ${value ?? '—'}`).join(' · ')}</p>)}</div>
+            {diff.samples.map(row => <p key={row.code}><b>{row.name}</b> {Object.entries(row.values).map(([key, value]) => {
+              const unit = dataset?.fields.find(field => field.id === key)?.unit
+              return `${key} ${unit === 'datetime' && typeof value === 'string' ? formatDateTime(value) : value ?? '—'}`
+            }).join(' · ')}</p>)}</div>
         </details>
       })}</div>}
       {job?.collection?.map(item => <p className="empty-inline" key={item.date}>Backup/Split · {conditionDate(item.date)}{item.time && ` · ${item.time} WIB`} · {item.count} wilayah</p>)}

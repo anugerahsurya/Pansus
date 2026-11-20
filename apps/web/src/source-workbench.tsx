@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react'
 import { ArrowRight, FileSpreadsheet, Link2, Plus, SlidersHorizontal } from 'lucide-react'
 import { activeFields, joinIdentity, type DataRow, type Dataset, type DatasetJoin, type Definition, type Field, type UploadMapping, type Value } from '../../../packages/contracts/index'
+import { formatDateTime } from '../../../packages/contracts/datetime'
 import { api, conditionDate, fmt, pct, type DashboardDetail } from './api'
 import { Alert } from './common'
 
@@ -12,7 +13,7 @@ type SourcePreview = {
 type JoinResult = { matched: number; unmatched: number; rows: DataRow[]; condition?: { date: string; time: string } }
 type JoinKey = DatasetJoin['left']
 type SaveDraft = (definition: Definition, mappings?: Record<string, UploadMapping>) => Promise<void>
-const unitNames: Record<Field['unit'], string> = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Teks' }
+const unitNames: Record<Field['unit'], string> = { count: 'Hitungan', number: 'Angka', percent: 'Persen', category: 'Teks', datetime: 'Tanggal & jam' }
 const joinDragType = 'application/x-pansus-join-key'
 const clean = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ')
 function rawField(dataset: Dataset, mapping: UploadMapping, label: string) {
@@ -20,6 +21,7 @@ function rawField(dataset: Dataset, mapping: UploadMapping, label: string) {
     ? clean(mapping.columns[field.id]) === label : [field.id, field.label, ...field.aliases].some(item => clean(item) === label)))
 }
 function cellText(value: Value, unit?: Field['unit']) {
+  if (unit === 'datetime' && typeof value === 'string') return formatDateTime(value)
   return value == null || value === '' ? '—' : typeof value === 'number' ? unit === 'percent' ? pct.format(value) : fmt.format(value) : value
 }
 
@@ -239,9 +241,10 @@ function SourceCard({ source, detail, mapping, editable, locked, linking, select
         const field = dataset && rawField(dataset, mapping ?? {}, column.label)
         const key = column.label === identity ? joinIdentity : field?.enabled !== false ? field?.id : undefined
         return <th key={index} scope="col" data-key-selected={!!key && selectedKey === key}><span>{column.label || `Kolom ${index + 1}`}</span>
+          {column.unit === 'datetime' && <small className="source-field-state">{unitNames.datetime}</small>}
           {field?.enabled === false && <small className="source-field-state">Tidak dipakai</small>}{column.selectable && key && linkButton(key, column.label)}</th>
       })}</tr></thead>
-      <tbody>{raw.rows.map((row, index) => <tr key={index}>{raw.columns.map((_, column) => <td key={column}>{cellText(row[column])}</td>)}</tr>)}</tbody>
+      <tbody>{raw.rows.map((row, index) => <tr key={index}>{raw.columns.map(({ unit }, column) => <td key={column}>{cellText(row[column], unit === 'datetime' ? unit : undefined)}</td>)}</tr>)}</tbody>
     </table></div>}
     {normalized && <div className="table-scroll source-scroll" tabIndex={0} role="region" aria-label={`Pratinjau ${source.label}`}><table>
       <thead><tr><th scope="col">Identitas{linkButton(joinIdentity, 'Identitas')}</th>{shownFields.map(field => <th scope="col" key={field.id} data-key-selected={selectedKey === field.id}>{field.label}{linkButton(field.id, field.label)}</th>)}</tr></thead>
@@ -267,7 +270,7 @@ function SourceCard({ source, detail, mapping, editable, locked, linking, select
             <td><select aria-label={`Tipe kolom ${field.label}`} value={field.unit === 'percent' ? field.scale ?? 'percentage' : field.unit} disabled={locked || field.derived} onChange={event => {
               const next = event.target.value
               editColumn(field.id, next === 'fraction' || next === 'percentage' ? { unit: 'percent', scale: next } : { unit: next as Field['unit'], scale: undefined })
-            }}><option value="count">{unitNames.count}</option><option value="number">{unitNames.number}</option><option value="category">{unitNames.category}</option><option value="percentage">Persen 0–100</option><option value="fraction">Persen 0–1</option></select></td>
+            }}><option value="count">{unitNames.count}</option><option value="number">{unitNames.number}</option><option value="category">{unitNames.category}</option><option value="datetime">{unitNames.datetime}</option><option value="percentage">Persen 0–100</option><option value="fraction">Persen 0–1</option></select></td>
             <td><input type="checkbox" aria-label={`Tampilkan ${field.label} kepada pembaca`} checked={field.public} disabled={locked || field.enabled === false} onChange={event => editColumn(field.id, { public: event.target.checked })} /></td>
           </tr>
         })}</tbody>

@@ -2,14 +2,54 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as xlsx from 'xlsx'
 import { definitionSchema, type Dataset, type DatasetData } from '../packages/contracts/index'
+import { formatDateTime } from '../packages/contracts/datetime'
 import { evaluate, compileFormulas, parseFormula } from '../packages/metrics/formula'
 import { aggregate, delta, previousDay, sortRows, targetRatio, weightedTarget } from '../packages/metrics/index'
-import { ImportError, normalizeUpload } from '../packages/adapters/index'
+import { ImportError, normalizeUpload, previewSource, profileAnalysisFile, readDataset } from '../packages/adapters/index'
 import { exampleFiles } from '../fixtures/synthetic/index'
 import { templateDefinition } from '../templates/index'
 
 const encode = (name: string, content: string) => ({ name, bytes: new TextEncoder().encode(content) })
 const row = (code: string, values: DatasetData['rows'][number]['values']) => ({ code, name: code, values })
+test('tanggal dan jam Excel serta CSV terdeteksi dan tersimpan hingga detik', () => {
+  const dataset: Dataset = {
+    id: 'wilayah', label: 'Wilayah', grain: 'district',
+    fields: [
+      { id: 'waktu', label: 'Waktu', unit: 'datetime', aliases: [], public: false, nullable: true },
+      { id: 'jumlah', label: 'Jumlah', unit: 'count', aliases: [], public: true, nullable: false },
+    ],
+  }
+  const seconds = [1, 5, 9, 13]
+  const regions = ['1303', '1306', '1307', '1309']
+  const labels = seconds.map(second => '20/11/2026 12:00:' + String(second).padStart(2, '0'))
+  const canonical = seconds.map(second => '2026-11-20T12:00:' + String(second).padStart(2, '0'))
+  const makeWorkbook = (date1904: boolean, bookType: 'xlsx' | 'xls') => {
+    const book = xlsx.utils.book_new()
+    book.Workbook = { WBProps: { date1904 } }
+    const sheet = xlsx.utils.aoa_to_sheet([
+      ['Wilayah', 'Waktu', 'Jumlah'],
+      ...seconds.map((second, index) => [regions[index], Date.UTC(2026, 10, 20, 12, 0, second) / 86_400_000 + (date1904 ? 24_107 : 25_569), 46_000]),
+    ])
+    for (const index of seconds.keys()) sheet['B' + (index + 2)].z = 'dd/mm/yyyy hh:mm:ss'
+    xlsx.utils.book_append_sheet(book, sheet, 'Data')
+    return { name: 'uji.' + bookType, bytes: new Uint8Array(xlsx.write(book, { type: 'array', bookType })) }
+  }
+  const csv = encode('uji.csv', 'wilayah,waktu,jumlah\n' + labels.map((label, index) => [regions[index], label.replace(' ', '   '), 46_000].join(',')).join('\n'))
+
+  for (const file of [csv, makeWorkbook(false, 'xlsx'), makeWorkbook(true, 'xlsx'), makeWorkbook(false, 'xls')]) {
+    assert.deepEqual(previewSource(file, dataset, {}).columns.map(column => column.unit), ['count', 'datetime', 'count'])
+    assert.equal(profileAnalysisFile(file, {}).columns[1].kind, 'datetime')
+    const data = readDataset(file, dataset, {}, false)
+    assert.deepEqual(data.rows.map(row => row.values.waktu), canonical)
+    assert.deepEqual(data.rows.map(row => formatDateTime(String(row.values.waktu))), labels)
+    assert.ok(data.rows.every(row => row.values.jumlah === 46_000))
+    assert.deepEqual(sortRows(data.rows, 'waktu', true).map(row => row.values.waktu), [...canonical].reverse())
+  }
+
+  const invalidDate = encode('salah.csv', 'wilayah,waktu,jumlah\n1303,31/11/2026 12:00:01,46000')
+  assert.throws(() => readDataset(invalidDate, dataset, {}, false), (error: unknown) => error instanceof ImportError && error.notice.code === 'INVALID_DATETIME')
+})
+
 const sampleDataset: Dataset = { id: 'sample', label: 'Contoh', grain: 'district', fields: ['a', 'b', 'c', 'd'].map(id => ({ id, label: id.toUpperCase(), aliases: [], public: true, unit: 'count', nullable: true, formula: id === 'd' ? 'A * B + C' : undefined })) }
 
 test('kontrak seluruh template dan referensi widget', () => {

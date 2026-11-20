@@ -4,9 +4,10 @@ import { ArrowDownToLine, ArrowRight, ArrowUpRight, BarChart3, CalendarDays, Che
 import type { Report, TemplateId } from '../../../packages/contracts/index'
 import { DashboardWidgets, Hero } from '../../../packages/widgets/index'
 import { api, conditionDate, type Account, type CatalogItem, type Sorts, type TemplateInfo } from './api'
-import { Alert, Back, Breadcrumb, Loading, useAuth, useData } from './common'
+import { Alert, Breadcrumb, Loading, useAuth, useData } from './common'
 
 export function Reader({ demo = false }: { demo?: boolean }) {
+  const { user } = useAuth()
   const params = useParams()
   const slug = demo ? 'progres-lapangan-pes' : params.slug!
   const [query, setQuery] = useSearchParams()
@@ -33,9 +34,9 @@ export function Reader({ demo = false }: { demo?: boolean }) {
     finally { setBusy(false) }
   }
   return <>
-    <Breadcrumb parts={[{ label: 'Portal pembaca', to: '/katalog' }, demo ? 'Ringkasan contoh' : report?.definition.title ?? 'Dashboard kegiatan']} />
+    <Breadcrumb parts={[user ? { label: 'Portal pembaca', to: '/katalog' } : 'Dashboard terbit', demo ? 'Ringkasan contoh' : report?.definition.title ?? 'Dashboard kegiatan']} />
     {request.loading && !report && <Loading />}
-    {request.error && <div className="panel state-panel"><Alert>{request.error}</Alert><div className="actions"><button className="button" onClick={request.reload}>Coba lagi</button><Link className="button" to={`/masuk?lanjut=${encodeURIComponent(`/d/${slug}`)}`}>Masuk dengan akun undangan</Link><Link to="/katalog" className="button subtle">Buka katalog kegiatan</Link></div></div>}
+    {request.error && <div className="panel state-panel"><Alert>{request.error}</Alert><div className="actions"><button className="button" onClick={request.reload}>Coba lagi</button><Link className="button" to={'/masuk?' + new URLSearchParams({ lanjut: `/d/${slug}${release ? '?' + new URLSearchParams({ release }) : ''}` })}>Masuk dengan akun undangan</Link>{user && <Link to="/katalog" className="button subtle">Buka katalog kegiatan</Link>}</div></div>}
     {report && <>
       <div className="report-toolbar">
         <div className="report-context"><span className="tag"><i />{report.demo ? 'Dashboard contoh' : report.activityStatus === 'closed' ? 'Kegiatan selesai' : 'Kegiatan berjalan'}</span></div>
@@ -53,7 +54,7 @@ export function Reader({ demo = false }: { demo?: boolean }) {
         setSorts(current => { const next = { ...current }; if (sort) next[id] = sort; else delete next[id]; return next })
         if (job?.status === 'ready') setJob(undefined)
       }} />
-      <footer className="page-footer"><span>{report.demo ? 'Data sintetis untuk demonstrasi.' : report.definition.satker}</span><Link to="/katalog">Lihat katalog kegiatan <ArrowUpRight size={14} /></Link></footer>
+      <footer className="page-footer"><span>{report.demo ? 'Data sintetis untuk demonstrasi.' : report.definition.satker}</span>{user && <Link to="/katalog">Lihat katalog kegiatan <ArrowUpRight size={14} /></Link>}</footer>
     </>}
   </>
 }
@@ -141,12 +142,11 @@ export function Login() {
       setUser(user)
       const to = params.get('lanjut')
       const home = user.permissions.dashboards || user.role === 'operator' ? '/studio' : user.permissions.users ? '/pengguna' : '/katalog'
-      navigate(to && /^\/(?!\/)[a-z][a-z0-9/-]*$/i.test(to) ? to : home, { replace: true })
+      navigate(to && /^\/(?:[a-z][a-z0-9/-]*)?(?:\?[^\\#]*)?$/i.test(to) ? to : home, { replace: true })
     } catch (error) { setError((error as Error).message) }
     finally { setBusy(false) }
   }
   return <div className="auth-container">
-    <Back to="/">Ringkasan contoh</Back>
     <div className="panel login-panel"><span className="metric-icon"><ClipboardList size={22} /></span><h1>Masuk ke portal</h1><p>Gunakan akun pengelola, operator data, atau pembaca undangan.</p>
       {error && <Alert>{error}</Alert>}
       <form className="form-stack" onSubmit={submit}><label>Email<input type="email" name="email" autoComplete="username" required maxLength={100} placeholder="nama@bps.go.id" /></label>

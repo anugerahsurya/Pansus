@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'reac
 import { ArrowDown, ArrowUp, Check, Plus, Redo2, Save, Trash2, Undo2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { activeFields, dashboardThemes, widgetWidths, type Definition, type Field, type Rule, type Widget } from '../../../packages/contracts/index'
+import { isNumericUnit } from '../../../packages/contracts/fields'
 import { donutCategoryLimit, groupedBarLimit, singleBarLimit } from '../../../packages/contracts/visualization'
 import { widgetLabels } from '../../../packages/widgets/index'
 import { api, fmt, type DashboardDetail } from './api'
@@ -9,7 +10,7 @@ import { Alert } from './common'
 import { DraftPreview } from './preview'
 
 const aggLabels: Record<Rule['op'], string> = { sum: 'Jumlah', count: 'Jumlah baris terisi', mean: 'Rata-rata', mode: 'Modus', weightedMean: 'Rata-rata tertimbang', ratioOfSums: 'Rasio jumlah', none: 'Kosongkan', reportedValue: 'Rekap resmi dari sumber', difference: 'Selisih', formula: 'Rumus dari angka provinsi' }
-const units: Record<Field['unit'], string> = { count: 'Hitungan bulat', number: 'Angka', percent: 'Persentase', category: 'Kategori' }
+const units: Record<Field['unit'], string> = { count: 'Hitungan bulat', number: 'Angka', percent: 'Persentase', category: 'Kategori', datetime: 'Tanggal & jam' }
 const widthLabels: Record<Widget['width'], string> = { quarter: 'Seperempat', third: 'Sepertiga', half: 'Setengah', 'two-thirds': 'Dua pertiga', full: 'Penuh' }
 const themeLabels: Record<Definition['theme'], string> = { teal: 'Biru BPS', blue: 'Biru Gelap BPS', plum: 'Hijau Wilayah', economy: 'Sensus Ekonomi', slate: 'Abu Netral' }
 function identity(prefix: string) { return `${prefix}_${crypto.randomUUID().slice(0, 8)}` }
@@ -89,7 +90,7 @@ export function Editor({ detail, onUpdate, onPendingChange, active }: { detail: 
   const setWidget = (id: string, next: Widget) => change({ ...draft, widgets: draft.widgets.map(widget => widget.id === id ? next : widget) })
   function addWidget(type: Widget['type']) {
     const dataset = draft.datasets[0]
-    const fields = activeFields(dataset).filter(field => field.public && field.unit !== 'category')
+    const fields = activeFields(dataset).filter(field => field.public && (isNumericUnit(field.unit) || type === 'table' && field.unit === 'datetime'))
     const width: Widget['width'] = type === 'table' ? 'full' : type === 'progress' || type === 'kpi' ? 'third' : 'half'
     const base = { id: identity('widget'), title: widgetLabels[type], type, version: 1 as const, width }
     if (type === 'link' || type === 'schedule') { change({ ...draft, widgets: [...draft.widgets, base] }); return }
@@ -182,12 +183,15 @@ function FieldEditor({ field, dashboard, dataset, fixed, configurable, focus, re
     <div className="editor-item-body form-stack">
     <div className="field-editor-heading"><code title="ID untuk rumus">{field.id}</code>{!fixed && removable && <button className="icon-button danger-text" aria-label={`Hapus ${field.label}`} onClick={onRemove}><Trash2 size={16} /></button>}</div>
     <label>Nama kolom<input ref={nameInput} value={field.label} maxLength={100} onChange={event => onChange({ ...field, label: event.target.value })} /></label>
-    <label>Satuan<select value={field.unit} disabled={fixed} onChange={event => onChange({ ...field, unit: event.target.value as Field['unit'] })}>{Object.entries(units).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
+    <label>Satuan<select value={field.unit} disabled={fixed} onChange={event => {
+      const unit = event.target.value as Field['unit']
+      onChange({ ...field, unit, scale: unit === 'percent' ? field.scale : undefined })
+    }}>{Object.entries(units).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
     {field.unit === 'percent' && <label>Skala angka sumber<select value={field.scale ?? 'percentage'} disabled={fixed} onChange={event => onChange({ ...field, scale: event.target.value as Field['scale'] })}><option value="percentage">Persen (0–100)</option><option value="fraction">Pecahan (0–1)</option></select></label>}
     {!field.derived && <label>Alias judul sumber (pisahkan dengan |)<input key={field.aliases.join(' | ')} defaultValue={field.aliases.join(' | ')} onBlur={event => { const aliases = event.target.value.split('|').map(alias => alias.trim()).filter(Boolean); if (JSON.stringify(aliases) !== JSON.stringify(field.aliases)) onChange({ ...field, aliases }) }} /></label>}
     {configurable && <label className="check"><input type="checkbox" checked={field.enabled !== false} onChange={event => onChange({ ...field, enabled: event.target.checked ? undefined : false })} /> Gunakan kolom</label>}
     <label className="check"><input type="checkbox" checked={field.public} disabled={field.enabled === false} onChange={event => onChange({ ...field, public: event.target.checked })} /> Boleh ditampilkan kepada pembaca</label>
-    {!field.derived && field.unit !== 'category' && <div className="form-stack"><label>Hitung dengan rumus (opsional)<input value={field.formula ?? ''} maxLength={256} onChange={event => { setError(''); setPreview(undefined); onChange({ ...field, formula: event.target.value || undefined }) }} placeholder="contoh: target * 2 + selesai" /></label>
+    {!field.derived && (isNumericUnit(field.unit) || field.formula) && <div className="form-stack"><label>Hitung dengan rumus (opsional)<input value={field.formula ?? ''} maxLength={256} onChange={event => { setError(''); setPreview(undefined); onChange({ ...field, formula: event.target.value || undefined }) }} placeholder="contoh: target * 2 + selesai" /></label>
       {field.formula && <button className="button subtle" onClick={check}>Periksa rumus</button>}{error && <Alert>{error}</Alert>}{preview && <div className="formula-preview"><p>Kolom terkait {preview.dependencies.map(item => `[${item.label}]`).join(', ') || '—'}</p>{preview.rows.map(row => <p key={row.name}>{row.name} <b>{row.value == null ? '—' : fmt.format(row.value)}</b> {row.reason}</p>)}{!preview.rows.length && <p>Unggah data untuk melihat contoh hasil.</p>}</div>}
     </div>}
     </div>
@@ -198,7 +202,7 @@ function WidgetEditor({ widget, definition, rows, onChange }: { widget: Widget; 
   const [pendingGroup, setPendingGroup] = useState<string>()
   const dataWidget = widget.type !== 'schedule' && widget.type !== 'link'
   const dataset = definition.datasets.find(item => item.id === widget.dataset)
-  const available = dataset ? activeFields(dataset).filter(field => field.public && (widget.type === 'table' || field.unit !== 'category')) : []
+  const available = dataset ? activeFields(dataset).filter(field => field.public && (widget.type === 'table' || isNumericUnit(field.unit))) : []
   const choice = available.map(field => <option value={field.id} key={field.id}>{field.label}</option>)
   const multiple = widget.type === 'table' || widget.type === 'donut'
   const group = widget.progressGroup
@@ -236,7 +240,7 @@ function WidgetEditor({ widget, definition, rows, onChange }: { widget: Widget; 
         const field = available.find(item => item.id === id)
         const rule = widget.provinceFooter!.rules[id] ?? { op: field?.unit === 'count' ? 'sum' : 'none' }
         const update = (next: Rule) => onChange({ ...widget, provinceFooter: { enabled: true, rules: { ...widget.provinceFooter?.rules, [id]: next } } })
-        return <div className="form-columns" key={id}><label>{field?.label ?? id}<select value={rule.op} onChange={event => update({ op: event.target.value as Rule['op'] })}>{Object.entries(aggLabels).filter(([key]) => (field?.unit !== 'category' || ['none', 'count', 'mode', 'reportedValue'].includes(key)) && (key !== 'formula' || field?.formula)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        return <div className="form-columns" key={id}><label>{field?.label ?? id}<select value={rule.op} onChange={event => update({ op: event.target.value as Rule['op'] })}>{Object.entries(aggLabels).filter(([key]) => (isNumericUnit(field?.unit) || ['none', 'count', 'mode', 'reportedValue'].includes(key)) && (key !== 'formula' || field?.formula)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
           {['ratioOfSums', 'weightedMean', 'difference'].includes(rule.op) && <><label>Kolom nilai<select value={rule.numerator ?? ''} onChange={event => update({ ...rule, numerator: event.target.value || undefined })}><option value="">Pilih</option>{choice}</select></label><label>Kolom pembagi atau bobot<select value={rule.denominator ?? ''} onChange={event => update({ ...rule, denominator: event.target.value || undefined })}><option value="">Pilih</option>{choice}</select></label></>}</div>
       })}</div>}
     {widget.type === 'link' && <label>Alamat tautan (HTTPS/HTTP)<input type="url" value={widget.url ?? ''} onChange={event => onChange({ ...widget, url: event.target.value || undefined })} /></label>}
