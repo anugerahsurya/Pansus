@@ -1,10 +1,10 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useReactTable, getCoreRowModel, flexRender, type ColumnDef } from '@tanstack/react-table'
-import { ArrowDown, ArrowUp, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronRight, ChevronsUpDown, ExternalLink, Maximize2, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronRight, ChevronsUpDown, ExternalLink, FileText, Maximize2, Search, X } from 'lucide-react'
 import type { CollectionReport, DataRow, Dataset, Field, Report, Value, Widget } from '../contracts/index'
 import { formatDateTime } from '../contracts/datetime'
 import { groupedBarLimit, singleBarLimit } from '../contracts/visualization'
-import { aggregate, delta, indicator, previousDay, progressBand, progressBands, sortRows, weightedTarget, type ProgressBand } from '../metrics/index'
+import { aggregate, delta, evaluateCardFormula, indicator, interpolateTemplate, previousDay, progressBand, progressBands, sortRows, weightedTarget, type ProgressBand } from '../metrics/index'
 import { pesPace, pesRegions } from '../../templates/regions'
 import { api, conditionDate, fmt, pct, type Sorts } from '../../apps/web/src/api'
 
@@ -19,7 +19,7 @@ const metricTypes = new Set(['progress', 'kpi'])
 const fieldLabel = (dataset: Dataset, id: string) => dataset.fields.find(field => field.id === id)?.label ?? id
 
 export const widgetLabels: Record<Widget['type'], string> = {
-  progress: 'Kartu progres', kpi: 'Kartu angka', bars: 'Grafik batang', donut: 'Diagram donat', table: 'Tabel wilayah', schedule: 'Kartu jadwal', link: 'Kartu tautan',
+  progress: 'Kartu progres', kpi: 'Kartu angka', bars: 'Grafik batang', donut: 'Diagram donat', table: 'Tabel wilayah', text: 'Kartu teks', schedule: 'Kartu jadwal', link: 'Kartu tautan',
 }
 
 export function Hero({ report, heading: Heading = 'h1', showCondition = true }: { report: Report; heading?: 'h1' | 'h2' | 'h3'; showCondition?: boolean }) {
@@ -68,8 +68,11 @@ function Metric({ widget, dataset, report, print }: { widget: Widget; dataset: D
   const data = report.data[dataset.id] ?? empty
   const previous = report.baseline?.[dataset.id]
   const field = dataset.fields.find(item => item.id === widget.field)
-  const result = indicator(data, dataset, widget.field!, widget.target)
-  const change = delta(data, previous, dataset, widget.field!, widget.target)
+  const cardFormula = widget.formula?.trim() || undefined
+  const result = cardFormula
+    ? { ...evaluateCardFormula(cardFormula, dataset, data), actual: null, target: null }
+    : indicator(data, dataset, widget.field!, widget.target, widget.aggregation)
+  const change = delta(data, previous, dataset, widget.field ?? '', widget.target, widget.aggregation, cardFormula)
   const value = result.value
   const ratio = typeof value === 'number' && result.percent ? value : null
   const metricColor = dataset.id === 'nonub' ? ' metric-green' : dataset.id === 'ub' ? ' metric-orange' : ''
@@ -85,35 +88,43 @@ function Metric({ widget, dataset, report, print }: { widget: Widget; dataset: D
   const entity = people ? 'petugas' : 'wilayah'
   const rowHeader = people ? 'Nama atau kode petugas' : 'Kabupaten / Kota'
   const emptyMessage = people ? 'Data petugas belum tersedia.' : 'Data wilayah belum tersedia.'
+  const aggText: Record<string, string> = {
+    sum: 'jumlah', mean: 'rata-rata', median: 'median', min: 'nilai minimum', max: 'nilai maksimum', variance: 'varians', stdev: 'simpangan baku', count: 'jumlah baris terisi',
+  }
   return <article className={'panel metric' + metricColor}>
     <div className="metric-head"><div><span className="metric-label">{dataset.label}</span><h3>{widget.title}</h3></div>
       {!print && <CardDetails title={widget.title} dataset={dataset} report={report}>{() => {
-        const h1 = previous && indicator(previous, dataset, widget.field!, widget.target).value
+        const h1 = previous && (cardFormula
+          ? evaluateCardFormula(cardFormula, dataset, previous).value
+          : indicator(previous, dataset, widget.field!, widget.target, widget.aggregation).value)
         const label = field?.label ?? widget.title
         const target = widget.target
+        const methodText = cardFormula ? `Rumus kartu: ${cardFormula}` :
+          target ? `Cara hitung: jumlah ${label} dibagi jumlah ${fieldLabel(dataset, target)} pada ${entity} dengan kedua angka tersedia.` :
+          widget.aggregation && widget.aggregation !== 'auto' ? `Cara hitung: ${aggText[widget.aggregation]} ${label} dari ${entity} yang memiliki nilai.` :
+          result.percent ? (people ? 'Cara hitung: rata-rata dari seluruh petugas yang memiliki nilai.' : 'Angka provinsi memakai rekap resmi dari sumber. Tabel menampilkan angka tiap wilayah.') : `Cara hitung: jumlah ${label} dari ${entity} yang memiliki nilai.`
         return <>
           <dl className="detail-facts">
             <div><dt>Nilai saat ini</dt><dd>{shown(value, result.percent ? 'percent' : 'number')}</dd></div>
             <div><dt>H−1{previous && ` · ${conditionDate(previousDay(report.condition.date))}`}</dt><dd>{shown(h1, result.percent ? 'percent' : 'number')}</dd></div>
             <div><dt>Perubahan H−1</dt><dd>{deltaLabel}</dd></div>
           </dl>
-          <p>{target ? `Cara hitung: jumlah ${label} dibagi jumlah ${fieldLabel(dataset, target)} pada ${entity} dengan kedua angka tersedia.` :
-            result.percent ? (people ? 'Cara hitung: rata-rata dari seluruh petugas yang memiliki nilai.' : 'Angka provinsi memakai rekap resmi dari sumber. Tabel menampilkan angka tiap wilayah.') : `Cara hitung: jumlah ${label} dari ${entity} yang memiliki nilai.`}</p>
+          <p>{methodText}</p>
           {change.value == null && <p>{change.reason === 'Kondisi H−1 belum tersedia.' ? report.baselineReason ?? change.reason : change.reason}</p>}
           {pace !== null && <p>Target waktu {pct.format(pace)} dihitung dari tenggat masing-masing wilayah, dengan bobot sesuai target penugasan.</p>}
-          <DetailTable rowHeader={rowHeader} emptyMessage={emptyMessage} columns={target ? [label, fieldLabel(dataset, target), 'Capaian'] : [label]} rows={data.rows.map(row => {
+          {!cardFormula && widget.field && <DetailTable rowHeader={rowHeader} emptyMessage={emptyMessage} columns={target ? [label, fieldLabel(dataset, target), 'Capaian'] : [label]} rows={data.rows.map(row => {
             const actual = row.values[widget.field!]
             const goal = target ? row.values[target] : null
             const values = [shown(actual, field?.unit)]
             if (target) values.push(shown(goal), shown(typeof actual === 'number' && typeof goal === 'number' && goal > 0 ? actual / goal : null, 'percent'))
             return { ...row, values }
-          })} />
+          })} />}
         </>
       }}</CardDetails>}
     </div>
     <div className="metric-amount"><strong>{shown(value, result.percent ? 'percent' : 'number')}</strong><span className={'delta ' + (change.value == null ? 'delta-none' : change.value < 0 ? 'delta-down' : 'delta-up')} title={change.value == null ? report.baselineReason ?? change.reason ?? '' : 'Perubahan sejak kondisi H−1'}>{change.value != null && (change.value < 0 ? <ArrowDown size={12} /> : <ArrowUp size={12} />)} {deltaLabel}</span></div>
     {widget.type === 'progress' && <div className="progress-track" aria-hidden="true"><span className="chart-fill" style={{ transform: `scaleX(${Math.max(0, Math.min(1, ratio ?? 0))})` }} /></div>}
-    <div className="metric-foot">{widget.target ? <span><b>{shown(result.actual)}</b> dari {shown(result.target)} target</span> : <span>{result.reason ?? `${result.coverage} ${entity} tercatat`}</span>}<span>vs. H−1</span></div>
+    <div className="metric-foot">{widget.target && !cardFormula ? <span><b>{shown(result.actual)}</b> dari {shown(result.target)} target</span> : <span>{result.reason ?? `${result.coverage} ${entity} tercatat`}</span>}<span>vs. H−1</span></div>
     {pace !== null && <div className="metric-foot pace" title={ratio != null && ratio >= pace ? 'Mencapai target waktu' : 'Di bawah target waktu'}><span>Target waktu</span><b>{pct.format(pace)}</b></div>}
   </article>
 }
@@ -311,12 +322,14 @@ export function DashboardWidgets({ report, sorts = {}, onSort, print = false }: 
   const { definition } = report
   const widget = (item: Widget, page?: number) => {
     const dataset = definition.datasets.find(dataset => dataset.id === item.dataset)
-    if (item.type === 'schedule') return <article className="panel resource"><span className="metric-icon"><CalendarDays size={19} /></span><h3>{item.title}</h3><p>{item.description || definition.period}</p>{report.collection?.length ? <Collection reports={report.collection} print={print} /> : null}</article>
-    if (item.type === 'link' && item.url) return <article className="panel resource"><span className="metric-icon"><ExternalLink size={19} /></span><h3>{item.title}</h3><p>{item.description}</p>{print ? <p>{item.url}</p> : <a href={item.url} target="_blank" rel="noopener noreferrer">Buka tautan <ArrowUpRight size={15} /><span className="sr-only"> (tab baru)</span></a>}</article>
+    const resolve = (text?: string) => text ? interpolateTemplate(text, definition.datasets, report.data, dataset) : text
+    if (item.type === 'text') return <article className="panel resource text-card"><span className="metric-icon"><FileText size={19} /></span><h3>{resolve(item.title)}</h3><p className="text-card-body">{resolve(item.description) || 'Tambahkan teks keterangan pada editor komponen.'}</p></article>
+    if (item.type === 'schedule') return <article className="panel resource"><span className="metric-icon"><CalendarDays size={19} /></span><h3>{resolve(item.title)}</h3><p className="text-card-body">{resolve(item.description) || definition.period}</p>{report.collection?.length ? <Collection reports={report.collection} print={print} /> : null}</article>
+    if (item.type === 'link' && item.url) return <article className="panel resource"><span className="metric-icon"><ExternalLink size={19} /></span><h3>{resolve(item.title)}</h3><p className="text-card-body">{resolve(item.description)}</p>{print ? <p>{item.url}</p> : <a href={item.url} target="_blank" rel="noopener noreferrer">Buka tautan <ArrowUpRight size={15} /><span className="sr-only"> (tab baru)</span></a>}</article>
     if (!dataset) return null
     if (item.type === 'progress' || item.type === 'kpi') return <Metric widget={item} dataset={dataset} report={report} print={print} />
-    if (item.type === 'bars') return <Bars widget={item} dataset={dataset} report={report} print={print} />
-    if (item.type === 'donut') return <Donut widget={item} dataset={dataset} report={report} print={print} />
+    if (item.type === 'bars') return <Bars widget={{ ...item, description: resolve(item.description) }} dataset={dataset} report={report} print={print} />
+    if (item.type === 'donut') return <Donut widget={{ ...item, description: resolve(item.description) }} dataset={dataset} report={report} print={print} />
     if (item.type === 'table') return <AreaTable key={item.id + report.currentRelease} widget={item} dataset={dataset} report={report} print={print} sort={sorts[item.id]} onSort={sort => onSort?.(item.id, sort)} page={page} />
     return null
   }

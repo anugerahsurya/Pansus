@@ -8,6 +8,7 @@ import { widgetLabels } from '../../../packages/widgets/index'
 import { ApiError, api, conditionDate, currentWib, fmt, requestCsvAnalysis, type CsvSuggestion, type DashboardDetail, type ImportJob } from './api'
 import { Alert } from './common'
 import { DraftPreview } from './preview'
+import { Select } from './select'
 import { SourceWorkbench } from './source-workbench'
 
 const tabularFormats = '.csv,.tsv,.xlsx,.xls,.json'
@@ -316,8 +317,8 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
             <div className="form-columns"><label>Tanggal kondisi<input type="date" required value={date} onChange={event => setDate(event.target.value)} /></label><label>Jam kondisi (WIB)<input type="time" required value={time} onChange={event => setTime(event.target.value)} /></label></div>
             {savedInputs && !matchingInputs && <button type="button" className="button subtle" onClick={() => { setDate(savedInputs.date); setTime(savedInputs.time) }}>Pakai kondisi terakhir · {conditionDate(savedInputs.date)} · {savedInputs.time} WIB</button>}
             {matchingInputs && <p className="muted-text">{canReapply ? 'Periksa ulang berkas tersimpan untuk menerapkan perubahan kolom atau penggabungan pada kondisi ini.' : 'Berkas tersimpan dapat digunakan kembali pada kondisi ini. Pilih berkas baru untuk sumber yang ingin ditambah atau diganti.'}</p>}
-            {detail.template === 'susenas' && <label>Profil sumber<select value={workbook ? 'workbook' : 'separate'} onChange={event => { setWorkbook(event.target.value === 'workbook'); setSuggestion(undefined) }}><option value="workbook">Satu workbook Susenas dan Seruti</option><option value="separate">Berkas terpisah per dataset</option></select></label>}
-            {detail.template === 'pes' && <label>Cara memilih berkas<select value={auto ? 'auto' : 'manual'} onChange={event => { setAuto(event.target.value === 'auto'); setSuggestion(undefined) }}><option value="auto">Deteksi otomatis</option><option value="manual">Pilih per dataset{detail.aiAvailable ? ' (manual atau Gemini)' : ''}</option></select></label>}
+            {detail.template === 'susenas' && <label>Profil sumber<Select value={workbook ? 'workbook' : 'separate'} options={[{ value: 'workbook', label: 'Satu workbook Susenas dan Seruti' }, { value: 'separate', label: 'Berkas terpisah per dataset' }]} onChange={value => { setWorkbook(value === 'workbook'); setSuggestion(undefined) }} /></label>}
+            {detail.template === 'pes' && <label>Cara memilih berkas<Select value={auto ? 'auto' : 'manual'} options={[{ value: 'auto', label: 'Deteksi otomatis' }, { value: 'manual', label: `Pilih per dataset${detail.aiAvailable ? ' (manual atau Gemini)' : ''}` }]} onChange={value => { setAuto(value === 'auto'); setSuggestion(undefined) }} /></label>}
             {auto && <div className="form-stack">
               <label className="file-slot">
                 <FileSpreadsheet size={20} aria-hidden="true" /><span><b>Tiga ekspor progres PES</b><small>Pilih ringkasan SLS dan dua ekspor assignment sekaligus. Urutan bebas. CSV, TSV, Excel, atau JSON.</small></span>
@@ -420,7 +421,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
         <div className="actions">
           <button type="button" className="text-button" onClick={() => setQuery({ tab: 'preview' })}>Buka Pratinjau penuh</button>
           {detail.canManage && <button type="button" className="text-button" onClick={() => setQuery({ tab: 'editor' })}>Poles di Editor</button>}
-          {detail.canManage && <button type="button" className="text-button" onClick={() => setQuery({ tab: 'access' })}>Terbitkan & akses</button>}
+          {detail.canManage && <button type="button" className="text-button" onClick={() => setQuery({ tab: 'access' })}>Lanjut ke penerbitan</button>}
         </div>
       </Alert>}
       {processing && <Alert tone="info">Worker sedang memeriksa berkas. Anda dapat membuka kembali pekerjaan ini dari riwayat unggahan.</Alert>}
@@ -465,7 +466,7 @@ export function UploadPanel({ detail, onUpdate, draftPending }: { detail: Dashbo
         <div className="actions">
           <button type="button" className="button" onClick={() => setQuery({ tab: 'preview' })}><Eye size={15} aria-hidden="true" /> Pratinjau penuh</button>
           {detail.canManage && <button type="button" className="button" onClick={() => setQuery({ tab: 'editor' })}><Settings size={15} aria-hidden="true" /> Poles di Editor</button>}
-          {detail.canManage && <button type="button" className="button primary" onClick={() => setQuery({ tab: 'access' })}><Globe size={15} aria-hidden="true" /> Terbitkan & akses</button>}
+          {detail.canManage && <button type="button" className="button primary" onClick={() => setQuery({ tab: 'access' })}><Globe size={15} aria-hidden="true" /> Lanjut terbitkan</button>}
         </div>
       </div>
       <DraftPreview detail={detail} inline />

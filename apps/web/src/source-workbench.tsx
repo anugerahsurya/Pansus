@@ -4,6 +4,7 @@ import { activeFields, joinIdentity, type DataRow, type Dataset, type DatasetJoi
 import { formatDateTime } from '../../../packages/contracts/datetime'
 import { api, conditionDate, fmt, pct, type DashboardDetail } from './api'
 import { Alert } from './common'
+import { Select } from './select'
 
 export type SourceInput = { id: string; label: string; file?: File; dataset?: Dataset }
 type SourcePreview = {
@@ -253,7 +254,7 @@ function SourceCard({ source, detail, mapping, editable, locked, linking, select
     {edit && <div className="source-column-editor form-stack">
       {configError && <Alert>{configError}</Alert>}
       <p className="muted-text">Lepaskan kolom dari komponen, rumus, atau penggabungan sebelum menonaktifkannya.</p>
-      {raw && <label>Kolom identitas<select value={edit.config.region ?? ''} disabled={locked} onChange={event => setEdit({ ...edit, config: { ...edit.config, region: event.target.value || undefined } })}><option value="">Deteksi otomatis</option>{raw.columns.filter(column => column.selectable).map(column => <option key={column.label}>{column.label}</option>)}</select></label>}
+      {raw && <label>Kolom identitas<Select value={edit.config.region ?? ''} disabled={locked} options={[{ value: '', label: 'Deteksi otomatis' }, ...raw.columns.filter(column => column.selectable).map(column => ({ value: column.label, label: column.label }))]} onChange={value => setEdit({ ...edit, config: { ...edit.config, region: value || undefined } })} /></label>}
       <div className="table-scroll source-scroll" tabIndex={0} role="region" aria-label={`Pengaturan kolom ${source.label}`}><table>
         <thead><tr><th scope="col">Pakai</th><th scope="col">Nama kolom</th><th scope="col">Judul di berkas</th><th scope="col">Tipe</th><th scope="col">Pembaca</th></tr></thead>
         <tbody>{edit.fields.map(field => {
@@ -261,21 +262,30 @@ function SourceCard({ source, detail, mapping, editable, locked, linking, select
           return <tr key={field.id} data-inactive={field.enabled === false}>
             <td><input type="checkbox" aria-label={`Gunakan ${field.label}`} checked={field.enabled !== false} disabled={locked} onChange={event => editColumn(field.id, { enabled: event.target.checked ? undefined : false })} /></td>
             <td><input aria-label={`Nama kolom ${field.id}`} value={field.label} maxLength={100} disabled={locked} onChange={event => editColumn(field.id, { label: event.target.value })} /></td>
-            <td>{raw && !field.derived && !field.formula ? <select aria-label={`Sumber kolom ${field.label}`} value={bound} disabled={locked} onChange={event => {
+            <td>{raw && !field.derived && !field.formula ? <Select ariaLabel={`Sumber kolom ${field.label}`} value={bound} disabled={locked} options={[
+              { value: '', label: 'Deteksi otomatis' },
+              ...(bound && !headers.some(column => column.label === bound) ? [{ value: bound, label: bound }] : []),
+              ...headers.map(column => ({ value: column.label, label: column.label })),
+            ]} onChange={value => {
               const next = { ...edit.config.columns }
-              if (event.target.value) next[field.id] = event.target.value
+              if (value) next[field.id] = value
               else delete next[field.id]
               setEdit({ ...edit, config: { ...edit.config, columns: next } })
-            }}><option value="">Deteksi otomatis</option>{bound && !headers.some(column => column.label === bound) && <option>{bound}</option>}{headers.map(column => <option key={column.label}>{column.label}</option>)}</select> : <span>{field.formula ? 'Rumus' : field.derived ? 'Turunan' : bound || 'Otomatis'}</span>}</td>
-            <td><select aria-label={`Tipe kolom ${field.label}`} value={field.unit === 'percent' ? field.scale ?? 'percentage' : field.unit} disabled={locked || field.derived} onChange={event => {
-              const next = event.target.value
+            }} /> : <span>{field.formula ? 'Rumus' : field.derived ? 'Turunan' : bound || 'Otomatis'}</span>}</td>
+            <td><Select ariaLabel={`Tipe kolom ${field.label}`} value={field.unit === 'percent' ? field.scale ?? 'percentage' : field.unit} disabled={locked || field.derived} options={[
+              { value: 'count', label: unitNames.count }, { value: 'number', label: unitNames.number }, { value: 'category', label: unitNames.category },
+              { value: 'datetime', label: unitNames.datetime }, { value: 'percentage', label: 'Persen 0–100' }, { value: 'fraction', label: 'Persen 0–1' },
+            ]} onChange={next => {
               editColumn(field.id, next === 'fraction' || next === 'percentage' ? { unit: 'percent', scale: next } : { unit: next as Field['unit'], scale: undefined })
-            }}><option value="count">{unitNames.count}</option><option value="number">{unitNames.number}</option><option value="category">{unitNames.category}</option><option value="datetime">{unitNames.datetime}</option><option value="percentage">Persen 0–100</option><option value="fraction">Persen 0–1</option></select></td>
+            }} /></td>
             <td><input type="checkbox" aria-label={`Tampilkan ${field.label} kepada pembaca`} checked={field.public} disabled={locked || field.enabled === false} onChange={event => editColumn(field.id, { public: event.target.checked })} /></td>
           </tr>
         })}</tbody>
       </table></div>
-      {headers.length > 0 && <div className="actions"><select aria-label="Pilih kolom untuk ditambahkan" value={add} disabled={locked} onChange={event => setAdd(event.target.value)}><option value="">Pilih kolom dari berkas</option>{headers.filter(column => dataset && !rawField({ ...dataset, fields: edit.fields }, edit.config, column.label)).map(column => <option key={column.label}>{column.label}</option>)}</select>
+      {headers.length > 0 && <div className="actions"><Select ariaLabel="Pilih kolom untuk ditambahkan" value={add} disabled={locked} options={[
+        { value: '', label: 'Pilih kolom dari berkas' },
+        ...headers.filter(column => dataset && !rawField({ ...dataset, fields: edit.fields }, edit.config, column.label)).map(column => ({ value: column.label, label: column.label })),
+      ]} onChange={setAdd} />
         <button type="button" className="button" disabled={locked || !add || edit.fields.length >= 50} onClick={addColumn}><Plus size={15} /> Tambah</button></div>}
       <div className="actions"><button type="button" className="button primary" disabled={locked} onClick={() => void apply()}>Simpan kolom</button><button type="button" className="button" disabled={locked} onClick={() => { setEdit(undefined); setConfigError('') }}>Batal</button></div>
     </div>}

@@ -6,7 +6,8 @@ export const idSchema = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/).refine(id => 
 export const dateSchema = z.iso.date()
 export const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
 export const visibilitySchema = z.enum(['public', 'link', 'invite'])
-export const aggregateSchema = z.enum(['sum', 'count', 'mean', 'mode', 'ratioOfSums', 'weightedMean', 'none', 'reportedValue', 'difference', 'formula'])
+export const aggregateSchema = z.enum(['sum', 'count', 'mean', 'median', 'min', 'max', 'variance', 'stdev', 'mode', 'ratioOfSums', 'weightedMean', 'none', 'reportedValue', 'difference', 'formula'])
+export const cardAggregationSchema = z.enum(['auto', 'sum', 'mean', 'median', 'min', 'max', 'variance', 'stdev', 'count'])
 export const ruleSchema = z.object({
   op: aggregateSchema, numerator: idSchema.optional(), denominator: idSchema.optional(),
 })
@@ -27,14 +28,16 @@ const datasetSchema = z.object({
   id: idSchema, label: z.string().trim().min(1).max(100), grain: z.enum(['district', 'person']).default('district'),
   fields: z.array(fieldSchema).min(1).max(50), publicDetail: z.boolean().optional(), join: joinSchema.optional(),
 })
-const widgetType = z.enum(['progress', 'kpi', 'bars', 'donut', 'table', 'link', 'schedule'])
+const widgetType = z.enum(['progress', 'kpi', 'bars', 'donut', 'table', 'text', 'link', 'schedule'])
 export const widgetWidths = ['quarter', 'third', 'half', 'two-thirds', 'full'] as const
 export const dashboardThemes = ['teal', 'blue', 'plum', 'economy', 'slate'] as const
 const widgetSchema = z.object({
   id: idSchema, title: z.string().trim().min(1).max(120), version: z.literal(1).default(1),
   width: z.enum(widgetWidths).default('half'), type: widgetType,
   dataset: idSchema.optional(), field: idSchema.optional(), fields: z.array(idSchema).max(16).optional(),
-  target: idSchema.optional(), description: z.string().max(300).optional(),
+  target: idSchema.optional(), description: z.string().max(1000).optional(),
+  aggregation: cardAggregationSchema.optional(),
+  formula: z.string().trim().min(1).max(256).optional(),
   url: z.url({ protocol: /^https?$/ }).max(500).optional(),
   provinceFooter: z.object({ enabled: z.boolean(), rules: z.record(idSchema, ruleSchema) }).optional(),
   progressGroup: z.object({ field: idSchema, target: idSchema.optional() }).optional(),
@@ -79,13 +82,15 @@ export const definitionSchema = z.object({
       if (!widget.url) issue(`Isi alamat tautan untuk ${widget.title}.`)
       continue
     }
-    if (widget.type === 'schedule') continue
+    if (widget.type === 'schedule' || widget.type === 'text') continue
     const dataset = widget.dataset && datasets.get(widget.dataset)
     if (!dataset) { issue(`Pilih dataset untuk ${widget.title}.`); continue }
     const fields = new Map(activeFields(dataset).map(field => [field.id, field]))
+    const hasCardFormula = ['progress', 'kpi'].includes(widget.type) && Boolean(widget.formula)
     const ids = [widget.field, widget.target, ...(widget.fields ?? [])].filter(Boolean) as string[]
-    if (!ids.length || ids.some(id => !fields.get(id)?.public)) issue(`Pilih kolom publik yang tersedia untuk ${widget.title}.`)
-    if (['progress', 'kpi', 'bars'].includes(widget.type) && !widget.field) issue(`Pilih indikator utama untuk ${widget.title}.`)
+    if (!hasCardFormula && (!ids.length || ids.some(id => !fields.get(id)?.public))) issue(`Pilih kolom publik yang tersedia untuk ${widget.title}.`)
+    if (hasCardFormula && ids.some(id => !fields.get(id)?.public)) issue(`Pilih kolom publik yang tersedia untuk ${widget.title}.`)
+    if (['progress', 'kpi', 'bars'].includes(widget.type) && !hasCardFormula && !widget.field) issue(`Pilih indikator utama untuk ${widget.title}.`)
     if (['table', 'donut'].includes(widget.type) && !widget.fields?.length) issue(`Pilih kolom untuk ${widget.title}.`)
     if (widget.type !== 'table' && ids.some(id => !isNumericUnit(fields.get(id)?.unit))) issue(`Pilih indikator numerik untuk ${widget.title}.`)
     if (widget.type === 'donut' && ids.some(id => fields.get(id)?.unit !== 'count')) issue(`Pilih kategori hitungan yang saling lepas untuk ${widget.title}.`)
@@ -114,6 +119,7 @@ export type Dataset = z.infer<typeof datasetSchema>
 export type Field = z.infer<typeof fieldSchema>
 export type DatasetJoin = z.infer<typeof joinSchema>
 export type Widget = z.infer<typeof widgetSchema>
+export type CardAggregation = z.infer<typeof cardAggregationSchema>
 export type Rule = z.infer<typeof ruleSchema>
 export type Visibility = z.infer<typeof visibilitySchema>
 export type Value = number | string | null

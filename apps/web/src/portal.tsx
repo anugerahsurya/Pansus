@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowDownToLine, ArrowRight, ArrowUpRight, BarChart3, CalendarDays, ChevronDown, ClipboardList, ExternalLink, FileSpreadsheet, LayoutTemplate, MapPin, Search, Smartphone } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ArrowUpRight, BarChart3, CalendarDays, ClipboardList, ExternalLink, FileSpreadsheet, LayoutTemplate, MapPin, Search, Smartphone } from 'lucide-react'
 import type { Report, TemplateId } from '../../../packages/contracts/index'
 import { DashboardWidgets, Hero } from '../../../packages/widgets/index'
 import { api, conditionDate, type Account, type CatalogItem, type Sorts, type TemplateInfo } from './api'
 import { Alert, Breadcrumb, Loading, useAuth, useData } from './common'
+import { Select } from './select'
 
 export function Reader({ demo = false }: { demo?: boolean }) {
   const { user } = useAuth()
@@ -41,7 +42,7 @@ export function Reader({ demo = false }: { demo?: boolean }) {
       <div className="report-toolbar">
         <div className="report-context"><span className="tag"><i />{report.demo ? 'Dashboard contoh' : report.activityStatus === 'closed' ? 'Kegiatan selesai' : 'Kegiatan berjalan'}</span></div>
         <div className="report-actions">
-          <label className="select-button"><CalendarDays size={16} /><span className="sr-only">Kondisi data</span><select aria-label="Kondisi data" value={release ?? report.currentRelease} onChange={event => setQuery({ release: event.target.value })}>{report.history.map(item => <option key={item.id} value={item.id}>{conditionDate(item.date)} · {item.time} WIB{report.history.some(other => other.id !== item.id && other.date === item.date && other.time === item.time) ? ` · v${item.version}` : ''}</option>)}</select><ChevronDown size={14} /></label>
+          <label className="select-button"><CalendarDays size={16} /><span className="sr-only">Kondisi data</span><Select className="react-select-inline" ariaLabel="Kondisi data" value={release ?? report.currentRelease} options={report.history.map(item => ({ value: item.id, label: `${conditionDate(item.date)} · ${item.time} WIB${report.history.some(other => other.id !== item.id && other.date === item.date && other.time === item.time) ? ` · v${item.version}` : ''}` }))} onChange={value => setQuery({ release: value })} /></label>
           {job?.status === 'ready' && !request.loading ? <a className="button primary" href={`/api/exports/${job.id}/download`}><ArrowDownToLine size={17} /> Unduh {job.pages && job.pages > 1 ? 'ZIP laporan' : 'PNG'}</a>
             : <button className="button primary" onClick={startExport} disabled={request.loading || busy || !exportError && (job?.status === 'queued' || job?.status === 'processing')}><ArrowDownToLine size={17} /> {busy || !exportError && (job?.status === 'queued' || job?.status === 'processing') ? 'Menyiapkan PNG…' : 'Unduh PNG'}</button>}
         </div>
@@ -89,7 +90,7 @@ export function Catalog() {
   return <>
     <Breadcrumb parts={[{ label: 'Portal pembaca', to: '/' }, 'Katalog kegiatan']} />
     <div className="page-heading"><div><h1>Katalog kegiatan</h1><p>Laporan kegiatan yang diterbitkan untuk publik.</p></div></div>
-    <div className="catalog-tools"><label className="search"><Search size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Cari nama kegiatan, satker, atau periode…" aria-label="Cari kegiatan" /></label><select aria-label="Status kegiatan" value={status} onChange={event => setStatus(event.target.value)}><option value="all">Semua status</option><option value="active">Berjalan</option><option value="closed">Selesai</option></select></div>
+    <div className="catalog-tools"><label className="search"><Search size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Cari nama kegiatan, satker, atau periode…" aria-label="Cari kegiatan" /></label><Select ariaLabel="Status kegiatan" value={status} options={[{ value: 'all', label: 'Semua status' }, { value: 'active', label: 'Berjalan' }, { value: 'closed', label: 'Selesai' }]} onChange={setStatus} /></div>
     {loading && !data && <Loading />}{error && <Alert>{error} <button className="text-button" onClick={reload}>Coba lagi</button></Alert>}
     {!loading && !error && !items.length && <div className="panel state-panel">Tidak ada kegiatan yang cocok.</div>}
     <div className="catalog-grid">{items.map(item => <article className="panel catalog-card" key={item.slug}>

@@ -1,5 +1,6 @@
-import type { DataRow, Dataset, DatasetData, Rule, Value, Values, Widget } from '../contracts/index'
-import { compileFormulas, evaluate } from './formula'
+import type { CardAggregation, DataRow, Dataset, DatasetData, Rule, Value, Values, Widget } from '../contracts/index'
+import { compileFormulas, computeStat, evaluate, evaluateCardFormula } from './formula'
+export { evaluateCardFormula, interpolateTemplate } from './formula'
 
 const number = (value: Value | undefined): value is number => typeof value === 'number' && Number.isFinite(value)
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0)
@@ -55,28 +56,37 @@ export function aggregate(data: DatasetData, field: string, rule: Rule = { op: '
     return result(sum(pairs.map(([a, b]) => rule.op === 'weightedMean' ? a * b : a)) / denominator, pairs.length)
   }
   if (!numbers.length) return result(null, 0, 'Data belum tersedia')
+  if (rule.op === 'median' || rule.op === 'min' || rule.op === 'max' || rule.op === 'variance' || rule.op === 'stdev') {
+    return result(computeStat(rule.op, numbers, valid.length))
+  }
   const total = sum(numbers)
   return result(rule.op === 'mean' ? total / numbers.length : total)
 }
 
-export function indicator(data: DatasetData, dataset: Dataset, field: string, target?: string) {
+export function indicator(data: DatasetData, dataset: Dataset, field: string, target?: string, aggregation?: CardAggregation) {
   const unit = dataset.fields.find(item => item.id === field)?.unit
   if (target) {
     const ratio = aggregate(data, field, { op: 'ratioOfSums', numerator: field, denominator: target })
     return { ...ratio, actual: aggregate(data, field).value, target: aggregate(data, target).value, percent: true }
   }
-  const rule: Rule = unit === 'percent' ? (dataset.grain === 'person' ? { op: 'mean' } : { op: 'reportedValue' }) : { op: 'sum' }
-  const metric = aggregate(data, field, rule)
-  return { ...metric, actual: null, target: null, percent: unit === 'percent' }
+  const op = aggregation && aggregation !== 'auto' ? aggregation : unit === 'percent' ? (dataset.grain === 'person' ? 'mean' : 'reportedValue') : 'sum'
+  const metric = aggregate(data, field, { op })
+  const isPercent = unit === 'percent' && op !== 'count' && op !== 'variance'
+  return { ...metric, actual: null, target: null, percent: isPercent }
 }
 
-export function delta(current: DatasetData, previous: DatasetData | undefined, dataset: Dataset, field: string, target?: string) {
+export function delta(current: DatasetData, previous: DatasetData | undefined, dataset: Dataset, field: string, target?: string, aggregation?: CardAggregation, cardFormula?: string) {
   if (!previous) return { value: null, reason: 'Kondisi H−1 belum tersedia.' }
+  if (cardFormula) {
+    const now = evaluateCardFormula(cardFormula, dataset, current).value
+    const before = evaluateCardFormula(cardFormula, dataset, previous).value
+    return number(now) && number(before) ? { value: now - before, reason: null } : { value: null, reason: 'Angka pembanding belum tersedia.' }
+  }
   const covered = (data: DatasetData) => new Set(data.rows.filter(row => number(row.values[field]) && (!target || number(row.values[target]))).map(row => row.code))
   const a = covered(current), b = covered(previous)
   if (a.size !== b.size || [...a].some(code => !b.has(code))) return { value: null, reason: 'Cakupan wilayah berubah.' }
-  const now = indicator(current, dataset, field, target).value
-  const before = indicator(previous, dataset, field, target).value
+  const now = indicator(current, dataset, field, target, aggregation).value
+  const before = indicator(previous, dataset, field, target, aggregation).value
   return number(now) && number(before) ? { value: now - before, reason: null } : { value: null, reason: 'Angka pembanding belum tersedia.' }
 }
 

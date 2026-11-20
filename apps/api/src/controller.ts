@@ -64,7 +64,7 @@ export class ControllerRoutes {
   @Get('admin/widget-catalog') widgets(@Req() req: Request) {
     return this.app.store.read(db => {
       this.app.requireUser(db, credentials(req))
-      return ['progress', 'kpi', 'bars', 'donut', 'table', 'schedule', 'link'].map(type => ({ type, version: 1, widths: widgetWidths }))
+      return ['progress', 'kpi', 'bars', 'donut', 'table', 'text', 'schedule', 'link'].map(type => ({ type, version: 1, widths: widgetWidths }))
     })
   }
   @Get('d/:slug') report(@Req() req: Request, @Param('slug') slug: string, @Query('release') release?: string) {

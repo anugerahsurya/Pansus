@@ -5,6 +5,7 @@ import { avatarCount, memberRoles, roleLabels, type Account, type MemberRole, ty
 import { api } from './api'
 import { Avatar } from './avatar'
 import { Alert, Breadcrumb, Loading, useAuth, useData } from './common'
+import { Select } from './select'
 
 export function Profile() {
   const { user } = useAuth()
@@ -94,6 +95,8 @@ export function Members() {
 function MemberDirectory({ user }: { user: Account }) {
   const { data, error, loading, reload } = useData<{ members: Account[]; policy?: SuperadminPolicy }>('/admin/members')
   const [saving, setSaving] = useState(false)
+  const [newRole, setNewRole] = useState<MemberRole>('reader')
+  const [roleDrafts, setRoleDrafts] = useState<Record<string, MemberRole>>({})
   const [notice, setNotice] = useState<{ error?: boolean; message: string }>()
   const roles = memberRoles.filter(role => user.permissions.roles || role === 'reader' || role === 'operator')
   async function submit(action: () => Promise<unknown>, message: string) {
@@ -120,7 +123,7 @@ function MemberDirectory({ user }: { user: Account }) {
         }}>
           <label>Nama<input name="name" required minLength={2} maxLength={100} /></label>
           <label>Email<input name="email" type="email" required maxLength={100} /></label>
-          <label>Role<select name="role" defaultValue="reader">{roles.map(role => <option value={role} key={role}>{roleLabels[role]}</option>)}</select></label>
+          <label>Role<Select name="role" value={newRole} options={roles.map(role => ({ value: role, label: roleLabels[role] }))} onChange={value => setNewRole(value as MemberRole)} /></label>
           <label>Kata sandi awal<input name="password" type="password" autoComplete="new-password" minLength={12} maxLength={200} required /></label>
           <button className="button primary" disabled={saving || loading}>Tambah pengguna</button>
         </form>
@@ -148,7 +151,7 @@ function MemberDirectory({ user }: { user: Account }) {
               const role = new FormData(event.currentTarget).get('role') as MemberRole
               if (role !== member.role) void submit(() => api(`/admin/members/${member.id}/role`, 'PATCH', { role, expectedRole: member.role }), 'Role pengguna diperbarui.')
             }}>
-              <select name="role" aria-label={`Role ${member.name}`} defaultValue={member.role}>{roles.map(role => <option value={role} key={role}>{roleLabels[role]}</option>)}</select>
+              <Select name="role" ariaLabel={`Role ${member.name}`} value={roleDrafts[member.id] ?? member.role} options={roles.map(role => ({ value: role, label: roleLabels[role] }))} onChange={value => setRoleDrafts(current => ({ ...current, [member.id]: value as MemberRole }))} />
               <button className="button" disabled={saving || loading}>Simpan role</button>
             </form> : <span>{roleLabels[member.role]}</span>}
         </div>)}</div>

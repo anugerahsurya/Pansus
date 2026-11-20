@@ -3,8 +3,8 @@ import { test } from 'node:test'
 import * as xlsx from 'xlsx'
 import { definitionSchema, type Dataset, type DatasetData } from '../packages/contracts/index'
 import { formatDateTime } from '../packages/contracts/datetime'
-import { evaluate, compileFormulas, parseFormula } from '../packages/metrics/formula'
-import { aggregate, delta, previousDay, sortRows, targetRatio, weightedTarget } from '../packages/metrics/index'
+import { evaluate, compileFormulas, evaluateCardFormula, interpolateTemplate, parseFormula } from '../packages/metrics/formula'
+import { aggregate, delta, indicator, previousDay, sortRows, targetRatio, weightedTarget } from '../packages/metrics/index'
 import { ImportError, normalizeUpload, previewSource, profileAnalysisFile, readDataset } from '../packages/adapters/index'
 import { exampleFiles } from '../fixtures/synthetic/index'
 import { templateDefinition } from '../templates/index'
@@ -109,6 +109,36 @@ test('rumus aman, presedensi, null, siklus, satuan dan izin', () => {
   assert.equal(check('2 / (c - 3)').reason, 'Pembagi bernilai nol.')
   assert.equal(check('2 * missing').value, null)
   assert.equal(check('-2 * -3').value, 6)
+  assert.deepEqual(evaluate(parseFormula('<A> * 10 + <B>', sampleDataset).expression, { a: 2, b: 5, c: 3 }), { value: 25 })
+  assert.deepEqual(evaluate(parseFormula('round(sqrt(<a> * 8))', sampleDataset).expression, { a: 2, b: 5, c: 3 }), { value: 4 })
+  const statsData: DatasetData = {
+    rows: [
+      { code: 'p1', name: 'Petugas Satu', values: { nilai: 10, periode: 'Triwulan I 2026' } },
+      { code: 'p2', name: 'Petugas Dua', values: { nilai: 20, periode: 'Triwulan I 2026' } },
+      { code: 'p3', name: 'Petugas Tiga', values: { nilai: 30, periode: 'Triwulan I 2026' } },
+    ],
+  }
+  const statsDataset: Dataset = {
+    id: 'petugas', label: 'Petugas', grain: 'person',
+    fields: [
+      { id: 'nilai', label: 'Nilai Capaian', unit: 'number', aliases: [], public: true, nullable: true },
+      { id: 'periode', label: 'Periode Data', unit: 'category', aliases: [], public: true, nullable: true },
+    ],
+  }
+  assert.equal(aggregate(statsData, 'nilai', { op: 'sum' }).value, 60)
+  assert.equal(aggregate(statsData, 'nilai', { op: 'median' }).value, 20)
+  assert.equal(aggregate(statsData, 'nilai', { op: 'min' }).value, 10)
+  assert.equal(aggregate(statsData, 'nilai', { op: 'max' }).value, 30)
+  assert.equal(aggregate(statsData, 'nilai', { op: 'variance' }).value, 100)
+  assert.equal(aggregate(statsData, 'nilai', { op: 'stdev' }).value, 10)
+  assert.equal(indicator(statsData, statsDataset, 'nilai', undefined, 'stdev').value, 10)
+  assert.equal(evaluateCardFormula('sum(<nilai>) * 2', statsDataset, statsData).value, 120)
+  assert.equal(evaluateCardFormula('stdev(<Nilai Capaian>) + <nilai>[0]', statsDataset, statsData).value, 20)
+  assert.equal(evaluateCardFormula('variance(<nilai>)', statsDataset, statsData).value, 100)
+  assert.equal(
+    interpolateTemplate('Update di periode <Periode Data>[0] oleh <identitas>[0], total <sum(nilai)>, sd <stdev(nilai)>', [statsDataset], { petugas: statsData }, statsDataset),
+    'Update di periode Triwulan I 2026 oleh Petugas Satu, total 60, sd 10',
+  )
   assert.throws(() => parseFormula('2; 1'))
   assert.throws(() => parseFormula('b = 1'))
   const cycle = structuredClone(sampleDataset)

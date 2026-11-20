@@ -808,7 +808,7 @@ export class Monitoring {
       if (field) field.formula = formula
       else dataset.fields.push({ id: fieldId, label: fieldId, public: true, nullable: true, unit: 'number', aliases: [], formula })
       let tree
-      try { compileFormulas(dataset); tree = parseFormula(formula) }
+      try { compileFormulas(dataset); tree = parseFormula(formula, dataset) }
       catch (error) { fail(422, 'INVALID_FORMULA', (error as Error).message) }
       const data = latestSnapshot(db, dashboard)?.data[datasetId]
       const rows = data ? applyFormulas(dataset, data).rows.slice(0, 4) : []

@@ -7,6 +7,7 @@ import { Alert, Breadcrumb, Loading, useAuth, useData } from './common'
 import { Editor } from './editor'
 import { UploadPanel } from './imports'
 import { DraftPreview } from './preview'
+import { Select } from './select'
 
 export default function Studio() {
   const { user, setUser } = useAuth()
@@ -95,7 +96,7 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
     {error && <Alert>{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}
     <div className="studio-grid">
       <section className="panel studio-panel"><div className="panel-heading"><span className="metric-icon"><Globe size={20} /></span><div><h2>Terbitkan dashboard</h2><p>Pilih siapa yang dapat membuka laporan pada tautan pembaca.</p></div></div>
-        <div className="form-stack"><label>Hak baca<select value={selectedVisibility} onChange={event => setVisibility(event.target.value as Visibility)}>{Object.entries(accessLabels).filter(([key]) => !personalRows || key !== 'public').map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>
+        <div className="form-stack"><label>Hak baca<Select value={selectedVisibility} options={Object.entries(accessLabels).filter(([key]) => !personalRows || key !== 'public').map(([key, name]) => ({ value: key, label: name }))} onChange={value => setVisibility(value as Visibility)} /></label>
         <p className="muted-text">{selectedVisibility === 'public' ? 'Dashboard akan masuk ke katalog yang dapat dilihat siapa saja.' : selectedVisibility === 'link' ? 'Siapa pun yang menerima tautan berbagi dapat langsung membuka dashboard tanpa perlu masuk akun.' : 'Pembaca perlu masuk dengan akun yang emailnya tercantum pada undangan.'}{personalRows && ' Dashboard per individu tidak ditampilkan di katalog publik.'}</p>
         <div className="actions"><button className="button primary" disabled={working || !detail.preview || detail.preview.demo} onClick={() => action(async () => {
           await api(`${path}/publish`, 'POST', { expectedRevision: detail.draftRevision, visibility: selectedVisibility })
@@ -128,7 +129,7 @@ function Access({ detail, reload }: { detail: DashboardDetail; reload: () => voi
             <label>Alasan {closed ? 'pembukaan kembali' : 'penutupan (opsional)'}<input value={closingReason} onChange={event => setClosingReason(event.target.value)} required={closed} minLength={3} maxLength={300} /></label><button className="button primary" disabled={working}>Konfirmasi {closed ? 'buka kembali' : 'selesai'}</button>
           </form>}
         </div>}
-        {!!(detail.preview?.history ?? history).length && <div className="form-stack"><label>Pulihkan rilis<select value={release} onChange={event => setRelease(event.target.value)}><option value="">Pilih kondisi dan versi</option>{(detail.preview?.history ?? history).map(item => <option value={item.id} key={item.id}>{conditionDate(item.date)} · {item.time} WIB · v{item.version}</option>)}</select></label><button className="button" disabled={working || !release} onClick={() => action(() => api(`${path}/rollback`, 'POST', { releaseId: release, expectedRevision: detail.draftRevision }), 'Rilis sebelumnya dipulihkan sebagai versi baru.')}>Pulihkan rilis pilihan</button></div>}
+        {!!(detail.preview?.history ?? history).length && <div className="form-stack"><label>Pulihkan rilis<Select value={release} options={[{ value: '', label: 'Pilih kondisi dan versi' }, ...(detail.preview?.history ?? history).map(item => ({ value: item.id, label: `${conditionDate(item.date)} · ${item.time} WIB · v${item.version}` }))]} onChange={setRelease} /></label><button className="button" disabled={working || !release} onClick={() => action(() => api(`${path}/rollback`, 'POST', { releaseId: release, expectedRevision: detail.draftRevision }), 'Rilis sebelumnya dipulihkan sebagai versi baru.')}>Pulihkan rilis pilihan</button></div>}
       </section>
     </div>
   </>
